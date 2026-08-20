@@ -1,0 +1,37 @@
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Streamlit local config
+.streamlit/secrets.toml
+
+# Generated app output
+output/
+
+# Local geoscience/input data
+data/
+*.sgy
+*.segy
+*.las
+
+# Reports and exported workbooks
+*.pdf
+*.xlsx
