@@ -3,17 +3,17 @@ import { HorizonSuggestion } from '../types';
 
 interface SpectrumChartProps {
   meanTrace: number[];
-  envelope: number[];
+  envelope?: number[];
   sampleRate: number;
-  suggestions: HorizonSuggestion[];
+  suggestions?: HorizonSuggestion[];
   onSelectSuggestion?: (sug: HorizonSuggestion) => void;
 }
 
 export const SpectrumChart: React.FC<SpectrumChartProps> = ({
   meanTrace,
-  envelope,
+  envelope = [],
   sampleRate,
-  suggestions,
+  suggestions = [],
   onSelectSuggestion,
 }) => {
   const n = meanTrace.length;
@@ -26,7 +26,7 @@ export const SpectrumChart: React.FC<SpectrumChartProps> = ({
   let maxEnv = 0.001;
   for (let i = 0; i < n; i++) {
     const a = Math.abs(meanTrace[i]);
-    const e = envelope[i] || 0;
+    const e = envelope[i] || Math.abs(meanTrace[i]);
     if (a > maxAmp) maxAmp = a;
     if (e > maxEnv) maxEnv = e;
   }
@@ -44,96 +44,141 @@ export const SpectrumChart: React.FC<SpectrumChartProps> = ({
   const plotH = svgHeight - padTop - padBottom;
   const midY = padTop + plotH / 2;
 
-  // Generate Mean Trace Path
+  // Step down points for SVG rendering
   const step = Math.max(1, Math.floor(n / 400));
-  let tracePath = '';
-  for (let i = 0; i < n; i += step) {
-    const x = padLeft + (i / (n - 1)) * plotW;
-    const y = midY - (meanTrace[i] / peakScale) * (plotH / 2);
-    if (i === 0) tracePath += `M ${x} ${y}`;
-    else tracePath += ` L ${x} ${y}`;
-  }
-
-  // Generate Envelope Path
+  let meanPath = '';
   let envPath = '';
+
   for (let i = 0; i < n; i += step) {
     const x = padLeft + (i / (n - 1)) * plotW;
-    const y = midY - (envelope[i] / peakScale) * (plotH / 2);
-    if (i === 0) envPath += `M ${x} ${y}`;
-    else envPath += ` L ${x} ${y}`;
+    const yMean = midY - (meanTrace[i] / peakScale) * (plotH / 2);
+    const envVal = envelope[i] || Math.abs(meanTrace[i]);
+    const yEnv = midY - (envVal / peakScale) * (plotH / 2);
+
+    if (i === 0) {
+      meanPath += `M ${x.toFixed(1)} ${yMean.toFixed(1)}`;
+      envPath += `M ${x.toFixed(1)} ${yEnv.toFixed(1)}`;
+    } else {
+      meanPath += ` L ${x.toFixed(1)} ${yMean.toFixed(1)}`;
+      envPath += ` L ${x.toFixed(1)} ${yEnv.toFixed(1)}`;
+    }
   }
 
   return (
-    <div className="w-full bg-[#0b1b30] border border-[#2a9bb0]/30 rounded-xl p-3 shadow-xl">
-      <div className="flex items-center justify-between mb-2 text-xs">
-        <span className="font-semibold text-[#e8f4f8]">Mean Trace Amplitude & Hilbert Envelope Spectrum</span>
-        <div className="flex items-center gap-4 text-[11px]">
-          <div className="flex items-center gap-1.5">
-            <div className="w-3 h-0.5 bg-[#8aafc0]" />
-            <span className="text-[#8aafc0]">Mean Amplitude</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="w-3 h-1 bg-[#f0a500] rounded-sm" />
-            <span className="text-[#f0a500]">Hilbert Envelope</span>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <div className="w-2 h-2 rounded-full bg-[#2ecc71]" />
-            <span className="text-[#2ecc71]">Horizon Candidate</span>
-          </div>
+    <div className="bg-[#050c17] rounded-xl border border-[#2a9bb0]/30 p-3 shadow-inner">
+      <div className="flex items-center justify-between text-xs text-[#8aafc0] px-2 mb-1">
+        <div className="flex items-center gap-3">
+          <span className="flex items-center gap-1.5 font-medium">
+            <span className="w-3 h-0.5 bg-[#00f0ff]"></span> Average Trace Amplitude
+          </span>
+          <span className="flex items-center gap-1.5 font-medium">
+            <span className="w-3 h-0.5 bg-[#ffd700] border-dashed"></span> Instantaneous Envelope
+          </span>
         </div>
+        <span className="font-mono text-[11px] text-[#2a9bb0]">
+          Total Time: {Math.round(totalTimeMs)} ms
+        </span>
       </div>
 
-      <div className="w-full overflow-x-auto">
-        <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="w-full h-auto min-w-[500px]">
-          {/* Background Grid */}
-          <line x1={padLeft} y1={midY} x2={padLeft + plotW} y2={midY} stroke="rgba(42,155,176,0.3)" strokeDasharray="3,3" />
-          
-          {/* X Axis Time ticks */}
-          {[0, 0.25, 0.5, 0.75, 1.0].map((frac, idx) => {
-            const x = padLeft + frac * plotW;
-            const tMs = Math.round(frac * totalTimeMs);
-            return (
-              <g key={idx}>
-                <line x1={x} y1={padTop} x2={x} y2={padTop + plotH} stroke="rgba(42,155,176,0.15)" strokeDasharray="2,2" />
-                <text x={x} y={svgHeight - 10} fill="#8aafc0" fontSize="9" textAnchor="middle" fontFamily="JetBrains Mono">
-                  {tMs} ms
-                </text>
-              </g>
-            );
-          })}
+      <svg
+        viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+        className="w-full h-auto text-[10px] font-mono text-[#8aafc0]"
+      >
+        {/* Background Grid */}
+        <line
+          x1={padLeft}
+          y1={midY}
+          x2={svgWidth - padRight}
+          y2={midY}
+          stroke="rgba(42, 155, 176, 0.25)"
+          strokeWidth="1"
+          strokeDasharray="4 2"
+        />
 
-          {/* Trace Curves */}
-          <path d={tracePath} fill="none" stroke="#607d8b" strokeWidth="1.2" />
-          <path d={envPath} fill="none" stroke="#f0a500" strokeWidth="2" opacity="0.85" />
+        {/* Time Tick Marks */}
+        {[0, 0.25, 0.5, 0.75, 1.0].map((frac, idx) => {
+          const x = padLeft + frac * plotW;
+          const time = Math.round(frac * totalTimeMs);
+          return (
+            <g key={idx}>
+              <line
+                x1={x}
+                y1={padTop}
+                x2={x}
+                y2={padTop + plotH}
+                stroke="rgba(42, 155, 176, 0.1)"
+                strokeWidth="1"
+              />
+              <text x={x} y={svgHeight - 10} fill="#8aafc0" textAnchor="middle">
+                {time}ms
+              </text>
+            </g>
+          );
+        })}
 
-          {/* Horizon Suggestions Peaks */}
-          {suggestions.map((sug, idx) => {
-            const x = padLeft + (sug.sample / (n - 1)) * plotW;
-            const y = midY - (envelope[sug.sample] / peakScale) * (plotH / 2);
-            return (
-              <g
-                key={idx}
-                className="cursor-pointer group"
-                onClick={() => onSelectSuggestion && onSelectSuggestion(sug)}
+        {/* Amplitude Ticks */}
+        <text x={padLeft - 8} y={padTop + 10} fill="#8aafc0" textAnchor="end">
+          +{peakScale.toFixed(2)}
+        </text>
+        <text x={padLeft - 8} y={midY + 4} fill="#8aafc0" textAnchor="end">
+          0.0
+        </text>
+        <text x={padLeft - 8} y={padTop + plotH} fill="#8aafc0" textAnchor="end">
+          -{peakScale.toFixed(2)}
+        </text>
+
+        {/* Mean Trace Path */}
+        <path d={meanPath} fill="none" stroke="#00f0ff" strokeWidth="1.5" />
+
+        {/* Envelope Path */}
+        <path
+          d={envPath}
+          fill="none"
+          stroke="#ffd700"
+          strokeWidth="1.5"
+          strokeDasharray="3 2"
+          opacity="0.8"
+        />
+
+        {/* Candidate Horizon Marker Pins */}
+        {suggestions.map((sug, idx) => {
+          const x = padLeft + (sug.sample / (n - 1)) * plotW;
+          return (
+            <g
+              key={idx}
+              className="cursor-pointer group"
+              onClick={() => onSelectSuggestion && onSelectSuggestion(sug)}
+            >
+              <line
+                x1={x}
+                y1={padTop}
+                x2={x}
+                y2={padTop + plotH}
+                stroke="#2ecc71"
+                strokeWidth="1.5"
+                strokeDasharray="2 2"
+              />
+              <circle
+                cx={x}
+                cy={padTop + 8}
+                r="4"
+                fill="#2ecc71"
+                className="group-hover:scale-125 transition-transform"
+              />
+              <text
+                x={x}
+                y={padTop - 4}
+                fill="#2ecc71"
+                textAnchor="middle"
+                fontSize="9"
+                fontWeight="bold"
               >
-                <line x1={x} y1={padTop} x2={x} y2={padTop + plotH} stroke="#2ecc71" strokeWidth="1" strokeDasharray="2,2" opacity="0.6" />
-                <circle cx={x} cy={y} r="4.5" fill="#2ecc71" stroke="#0a1628" strokeWidth="1.5" className="group-hover:r-6 transition-all" />
-                <text
-                  x={x}
-                  y={y - 8}
-                  fill="#e8f4f8"
-                  fontSize="8.5"
-                  textAnchor="middle"
-                  fontFamily="JetBrains Mono"
-                  className="font-bold drop-shadow"
-                >
-                  {sug.timeMs}ms ({sug.confidence}%)
-                </text>
-              </g>
-            );
-          })}
-        </svg>
-      </div>
+                {sug.timeMs}ms
+              </text>
+            </g>
+          );
+        })}
+      </svg>
     </div>
   );
 };

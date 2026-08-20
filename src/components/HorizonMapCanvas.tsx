@@ -1,8 +1,8 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { Layers, ArrowUpDown } from 'lucide-react';
+import { Layers, ArrowUpDown, TrendingUp } from 'lucide-react';
 
 interface HorizonMapCanvasProps {
-  horizon: number[][]; // [nInlines][nCrosslines] sample index
+  horizon: number[][]; // [nInlines][nCrosslines] sample index, or [1][nTraces] for 2D line
   sampleRate: number;
   velocityMs: number;
   title: string;
@@ -29,6 +29,7 @@ export const HorizonMapCanvas: React.FC<HorizonMapCanvasProps> = ({
 
   const nInlines = horizon.length;
   const nCrosslines = horizon[0]?.length || 0;
+  const is2D = nInlines <= 1;
 
   // Calculate statistics
   let minVal = Infinity;
@@ -54,9 +55,7 @@ export const HorizonMapCanvas: React.FC<HorizonMapCanvasProps> = ({
   // Petrel Rainbow Colormap: Blue (Shallow) -> Cyan -> Green -> Yellow -> Red (Deep)
   const getRainbowColor = (t: number): [number, number, number] => {
     const clamped = Math.max(0, Math.min(1, t));
-    let r = 0,
-      g = 0,
-      b = 0;
+    let r = 0, g = 0, b = 0;
 
     if (clamped < 0.25) {
       const p = clamped / 0.25;
@@ -93,154 +92,204 @@ export const HorizonMapCanvas: React.FC<HorizonMapCanvasProps> = ({
     ctx.clearRect(0, 0, width, height);
 
     const span = Math.max(1, maxVal - minVal);
-    const imgData = ctx.createImageData(nCrosslines, nInlines);
-    const buf = imgData.data;
 
-    for (let il = 0; il < nInlines; il++) {
-      for (let xl = 0; xl < nCrosslines; xl++) {
-        const s = horizon[il][xl];
+    if (is2D) {
+      // 2D HORIZON PROFILE RENDERING
+      const traces = horizon[0];
+      const nTraces = traces.length;
+
+      // Draw background grid
+      ctx.fillStyle = '#081424';
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = 'rgba(42, 155, 176, 0.15)';
+      ctx.lineWidth = 1;
+      for (let y = 40; y < height - 30; y += 40) {
+        ctx.beginPath();
+        ctx.moveTo(40, y);
+        ctx.lineTo(width - 20, y);
+        ctx.stroke();
+      }
+
+      // Draw horizon curve
+      const strokeColor = horizonType === 'top' ? '#00f0ff' : '#f0a500';
+      const fillColor = horizonType === 'top' ? 'rgba(0, 240, 255, 0.18)' : 'rgba(240, 165, 0, 0.18)';
+
+      const getPlotY = (val: number) => {
+        const norm = (val - minVal) / span; // 0 = shallow (top), 1 = deep (bottom)
+        return 40 + norm * (height - 80);
+      };
+
+      ctx.beginPath();
+      for (let t = 0; t < nTraces; t++) {
+        const s = traces[t];
         const time = s * sampleRate;
         const depth = (time / 2000.0) * velocityMs;
         const val = unitMode === 'time' ? time : depth;
-        const t = (val - minVal) / span;
+        const x = 40 + (t / (nTraces - 1)) * (width - 60);
+        const y = getPlotY(val);
 
-        const [r, g, b] = getRainbowColor(t);
-        const idx = (il * nCrosslines + xl) * 4;
-        buf[idx] = r;
-        buf[idx + 1] = g;
-        buf[idx + 2] = b;
-        buf[idx + 3] = 255;
+        if (t === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
       }
-    }
 
-    // Render smoothed image
-    const offCanvas = document.createElement('canvas');
-    offCanvas.width = nCrosslines;
-    offCanvas.height = nInlines;
-    const offCtx = offCanvas.getContext('2d');
-    if (offCtx) {
-      offCtx.putImageData(imgData, 0, 0);
-      ctx.imageSmoothingEnabled = true;
-      ctx.drawImage(offCanvas, 0, 0, width, height);
-    }
+      // Stroke profile
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 3;
+      ctx.stroke();
 
-    // Draw contour isolines
-    ctx.lineWidth = 1;
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-    const nContours = 8;
-    const contourStep = span / nContours;
+      // Shaded fill to bottom
+      ctx.lineTo(width - 20, height - 30);
+      ctx.lineTo(40, height - 30);
+      ctx.closePath();
+      ctx.fillStyle = fillColor;
+      ctx.fill();
 
-    for (let c = 1; c < nContours; c++) {
-      const contourVal = minVal + c * contourStep;
-      // Simple horizontal & vertical contour segment check
-      for (let il = 0; il < nInlines - 1; il++) {
-        for (let xl = 0; xl < nCrosslines - 1; xl++) {
-          const v00 = unitMode === 'time' ? horizon[il][xl] * sampleRate : (horizon[il][xl] * sampleRate / 2000) * velocityMs;
-          const v01 = unitMode === 'time' ? horizon[il][xl + 1] * sampleRate : (horizon[il][xl + 1] * sampleRate / 2000) * velocityMs;
-          const v10 = unitMode === 'time' ? horizon[il + 1][xl] * sampleRate : (horizon[il + 1][xl] * sampleRate / 2000) * velocityMs;
+      // Axis labels
+      ctx.fillStyle = '#8aafc0';
+      ctx.font = '10px monospace';
+      ctx.fillText(`Min: ${minVal.toFixed(0)} ${unitMode === 'time' ? 'ms' : 'm'}`, 45, 30);
+      ctx.fillText(`Max: ${maxVal.toFixed(0)} ${unitMode === 'time' ? 'ms' : 'm'}`, 45, height - 12);
+      ctx.fillText(`CMPs 1 to ${nTraces}`, width - 120, height - 12);
+    } else {
+      // 3D HORIZON SURFACE MAP
+      const imgData = ctx.createImageData(nCrosslines, nInlines);
+      const buf = imgData.data;
 
-          if ((v00 <= contourVal && v01 > contourVal) || (v00 > contourVal && v01 <= contourVal)) {
-            const x = ((xl + 0.5) / nCrosslines) * width;
-            const y = ((il + 0.5) / nInlines) * height;
-            ctx.strokeRect(x, y, 1, 1);
-          }
+      for (let il = 0; il < nInlines; il++) {
+        for (let xl = 0; xl < nCrosslines; xl++) {
+          const s = horizon[il][xl];
+          const time = s * sampleRate;
+          const depth = (time / 2000.0) * velocityMs;
+          const val = unitMode === 'time' ? time : depth;
+
+          const norm = (val - minVal) / span;
+          const [r, g, b] = getRainbowColor(norm);
+
+          const idx = (il * nCrosslines + xl) * 4;
+          buf[idx] = r;
+          buf[idx + 1] = g;
+          buf[idx + 2] = b;
+          buf[idx + 3] = 255;
         }
       }
+
+      const offCanvas = document.createElement('canvas');
+      offCanvas.width = nCrosslines;
+      offCanvas.height = nInlines;
+      const offCtx = offCanvas.getContext('2d');
+      if (offCtx) {
+        offCtx.putImageData(imgData, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+        ctx.drawImage(offCanvas, 0, 0, width, height);
+      }
     }
-  }, [horizon, sampleRate, velocityMs, unitMode, minVal, maxVal]);
+  }, [horizon, sampleRate, velocityMs, unitMode, minVal, maxVal, is2D, horizonType]);
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
     const rect = canvas.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    const normX = Math.max(0, Math.min(1, x / rect.width));
-    const normY = Math.max(0, Math.min(1, y / rect.height));
+    const normX = Math.max(0, Math.min(1, x / canvas.width));
+    const normY = Math.max(0, Math.min(1, y / canvas.height));
 
-    const xlIdx = Math.floor(normX * nCrosslines);
-    const ilIdx = Math.floor(normY * nInlines);
+    const xl = Math.min(nCrosslines - 1, Math.floor(normX * nCrosslines));
+    const il = Math.min(nInlines - 1, Math.floor(normY * nInlines));
 
-    const s = horizon[ilIdx]?.[xlIdx] ?? 0;
-    const timeMs = s * sampleRate;
+    const sample = horizon[il]?.[xl] || 0;
+    const timeMs = sample * sampleRate;
     const depthM = (timeMs / 2000.0) * velocityMs;
 
     setHoverCoord({
       x,
       y,
-      il: 100 + ilIdx,
-      xl: 200 + xlIdx,
-      timeMs: Math.round(timeMs * 10) / 10,
-      depthM: Math.round(depthM * 10) / 10,
+      il,
+      xl,
+      timeMs: Math.round(timeMs),
+      depthM: Math.round(depthM),
     });
   };
 
   return (
-    <div className="relative w-full flex flex-col bg-[#0b1b30] border border-[#2a9bb0]/30 rounded-xl overflow-hidden shadow-2xl">
-      {/* Header Bar */}
-      <div className="flex items-center justify-between px-4 py-2.5 bg-[#0f243f] border-b border-[#2a9bb0]/20 text-xs">
-        <div className="flex items-center gap-2">
-          <Layers className="w-4 h-4 text-[#2a9bb0]" />
-          <span className="font-semibold text-[#e8f4f8]">{title}</span>
-          <span className="bg-[#162d4c] px-2 py-0.5 rounded text-[#2a9bb0] font-mono text-[11px]">
-            {nInlines} Inlines × {nCrosslines} Crosslines
+    <div className="bg-[#0b1b30] border border-[#2a9bb0]/30 rounded-xl p-4 shadow-xl space-y-3">
+      {/* Header & Controls */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h4 className="text-sm font-bold text-[#e8f4f8] flex items-center gap-2">
+            <span
+              className="w-3 h-3 rounded-full"
+              style={{ backgroundColor: horizonType === 'top' ? '#00f0ff' : '#f0a500' }}
+            ></span>
+            {title} {is2D ? '(2D Profile)' : '(3D Surface)'}
+          </h4>
+          <span className="text-xs text-[#8aafc0]">
+            {is2D ? `${nCrosslines} continuous CMP stations` : `${nInlines} Inlines × ${nCrosslines} Crosslines`} | Mean:{' '}
+            <strong className="text-[#00f0ff]">{meanVal.toFixed(1)} {unitMode === 'time' ? 'ms' : 'm'}</strong>
           </span>
         </div>
 
-        <button
-          onClick={() => setUnitMode(unitMode === 'depth' ? 'time' : 'depth')}
-          className="flex items-center gap-1.5 px-3 py-1 bg-[#162840] hover:bg-[#1f3757] text-[#2a9bb0] hover:text-[#e8f4f8] border border-[#2a9bb0]/40 rounded text-xs transition-colors"
-        >
-          <ArrowUpDown className="w-3.5 h-3.5" />
-          Unit: <b className="text-[#f0a500] uppercase">{unitMode === 'depth' ? 'Depth (m)' : 'TWT (ms)'}</b>
-        </button>
+        {/* Unit Toggle */}
+        <div className="flex items-center gap-2 bg-[#071322] p-1 rounded-lg border border-[#2a9bb0]/30 text-xs">
+          <button
+            onClick={() => setUnitMode('depth')}
+            className={`px-3 py-1 rounded transition-colors ${
+              unitMode === 'depth'
+                ? 'bg-[#2a9bb0] text-[#0a1628] font-bold'
+                : 'text-[#8aafc0] hover:text-[#e8f4f8]'
+            }`}
+          >
+            True Depth (m)
+          </button>
+          <button
+            onClick={() => setUnitMode('time')}
+            className={`px-3 py-1 rounded transition-colors ${
+              unitMode === 'time'
+                ? 'bg-[#2a9bb0] text-[#0a1628] font-bold'
+                : 'text-[#8aafc0] hover:text-[#e8f4f8]'
+            }`}
+          >
+            TWT (ms)
+          </button>
+        </div>
       </div>
 
-      {/* Map Canvas with Axes */}
-      <div className="relative w-full flex flex-col items-center bg-[#071322] p-3 select-none">
-        <div className="relative w-full flex items-center justify-center">
-          <canvas
-            ref={canvasRef}
-            width={520}
-            height={420}
-            onMouseMove={handleMouseMove}
-            onMouseLeave={() => setHoverCoord(null)}
-            className="w-full max-w-[560px] h-auto object-contain rounded cursor-crosshair border border-[#2a9bb0]/30 shadow-inner"
-          />
+      {/* Main Canvas Area */}
+      <div className="relative bg-[#050c17] rounded-lg border border-[#2a9bb0]/20 p-2 overflow-hidden">
+        <canvas
+          ref={canvasRef}
+          width={600}
+          height={320}
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setHoverCoord(null)}
+          className="w-full h-[320px] rounded cursor-crosshair object-fill"
+        />
 
-          {hoverCoord && (
-            <div
-              className="absolute pointer-events-none z-20 bg-[#0a1829]/95 backdrop-blur border border-[#2a9bb0] rounded px-3 py-1.5 text-[11px] font-mono text-[#e8f4f8] shadow-2xl"
-              style={{
-                left: `${Math.min(hoverCoord.x + 15, 380)}px`,
-                top: `${Math.max(10, hoverCoord.y - 45)}px`,
-              }}
-            >
-              <span className="text-[#2a9bb0]">IL:</span> {hoverCoord.il} &nbsp;|&nbsp;{' '}
-              <span className="text-[#2a9bb0]">XL:</span> {hoverCoord.xl}
-              <br />
-              <span className="text-[#f0a500]">TWT:</span> {hoverCoord.timeMs} ms &nbsp;|&nbsp;{' '}
-              <span className="text-[#2ecc71]">Depth:</span> {hoverCoord.depthM} m
+        {/* Live Hover Tooltip */}
+        {hoverCoord && (
+          <div className="absolute top-4 right-4 bg-[#071322]/90 border border-[#2a9bb0] rounded-lg px-3 py-1.5 font-mono text-xs text-[#e8f4f8] shadow-lg pointer-events-none backdrop-blur-sm space-y-0.5">
+            <div className="text-[#2a9bb0] font-bold">
+              {is2D ? `CMP / Trace: ${hoverCoord.xl + 1}` : `IL: ${hoverCoord.il + 100} | XL: ${hoverCoord.xl + 200}`}
             </div>
-          )}
-        </div>
+            <div>
+              Depth: <strong className="text-[#2ecc71]">{hoverCoord.depthM} m</strong> ({hoverCoord.timeMs} ms)
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Colorbar Scale */}
-      <div className="px-4 py-2.5 bg-[#0d2138] border-t border-[#2a9bb0]/20 flex items-center justify-between text-xs text-[#8aafc0]">
-        <div className="flex items-center gap-3">
-          <span className="font-mono text-[11px] text-[#2a9bb0]">
-            Min: <b>{Math.round(minVal)} {unitMode === 'depth' ? 'm' : 'ms'}</b>
-          </span>
-          <div className="w-48 h-3 rounded bg-gradient-to-r from-blue-600 via-cyan-400 via-green-400 via-yellow-400 to-red-600 border border-[#2a9bb0]/40 shadow-sm" />
-          <span className="font-mono text-[11px] text-[#f0a500]">
-            Max: <b>{Math.round(maxVal)} {unitMode === 'depth' ? 'm' : 'ms'}</b>
-          </span>
-        </div>
-
-        <span className="font-mono text-[11px] text-[#e8f4f8]">
-          Mean: <b className="text-[#2ecc71]">{Math.round(meanVal)} {unitMode === 'depth' ? 'm' : 'ms'}</b>
+      {/* Colorbar / Scale Bar */}
+      <div className="flex items-center justify-between text-xs text-[#8aafc0] pt-1">
+        <span className="font-mono text-[#00f0ff]">
+          Shallow: {minVal.toFixed(0)} {unitMode === 'time' ? 'ms' : 'm'}
+        </span>
+        <div className="flex-1 mx-4 h-2.5 rounded bg-gradient-to-r from-blue-500 via-cyan-400 via-green-400 via-yellow-400 to-red-500 opacity-90"></div>
+        <span className="font-mono text-[#e74c3c]">
+          Deep: {maxVal.toFixed(0)} {unitMode === 'time' ? 'ms' : 'm'}
         </span>
       </div>
     </div>

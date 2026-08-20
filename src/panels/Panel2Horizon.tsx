@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { SeismicCube, HorizonState } from '../types';
+import { SeismicDataset, HorizonState } from '../types';
 import {
   pickHorizonSurface,
   computeIsochore,
@@ -22,7 +22,7 @@ import {
 } from 'lucide-react';
 
 interface Panel2HorizonProps {
-  cube: SeismicCube | null;
+  cube: SeismicDataset | null;
   horizonState: HorizonState | null;
   onHorizonSaved: (state: HorizonState) => void;
   onNavigateNext: () => void;
@@ -38,13 +38,15 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
     return (
       <div className="p-8 bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl text-center">
         <div className="text-3xl mb-2">⚠️</div>
-        <h3 className="text-lg font-bold text-[#e8f4f8]">No 3D Seismic Cube Loaded</h3>
+        <h3 className="text-lg font-bold text-[#e8f4f8]">No Seismic Dataset Loaded</h3>
         <p className="text-sm text-[#8aafc0] mt-1 mb-4">
-          Please return to Panel 1 and load a seismic dataset first.
+          Please return to Panel 1 and load a 2D line or 3D seismic volume first.
         </p>
       </div>
     );
   }
+
+  const is2D = cube.type === '2d';
 
   // Picking configuration
   const [topTargetMs, setTopTargetMs] = useState<number>(horizonState?.topTargetMs || 2240);
@@ -56,7 +58,7 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
   const [velocity, setVelocity] = useState<number>(horizonState?.velocity || 2500);
   const [inlineSpacing, setInlineSpacing] = useState<number>(horizonState?.inlineSpacing || 25);
   const [crosslineSpacing, setCrosslineSpacing] = useState<number>(
-    horizonState?.crosslineSpacing || 25
+    horizonState?.crosslineSpacing || (is2D ? 1500 : 25)
   );
   const [uncertaintyPct, setUncertaintyPct] = useState<number>(
     horizonState?.structuralUncertaintyPercent || 15
@@ -122,10 +124,19 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
       <div className="bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl p-5 shadow-lg flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold text-[#e8f4f8] flex items-center gap-2">
-            <span className="text-2xl">📐</span> Panel 2 — Horizon Picking & Gross Rock Volume (GRV)
+            <span className="text-2xl">📐</span> Panel 2 — Horizon Tracking & Gross Rock Volume (GRV)
+            <span
+              className={`text-xs font-mono font-bold px-2.5 py-0.5 rounded-full ${
+                is2D
+                  ? 'bg-[#2ecc71]/20 text-[#2ecc71] border border-[#2ecc71]/40'
+                  : 'bg-[#00f0ff]/20 text-[#00f0ff] border border-[#00f0ff]/40'
+              }`}
+            >
+              {is2D ? '2D Line Tracking' : '3D Volume Tracking'}
+            </span>
           </h2>
           <p className="text-sm text-[#8aafc0] mt-1">
-            Pick top & base reservoir horizons automatically across all 3D traces, compute isochore thickness, and calculate Gross Rock Volume.
+            Pick top & base reservoir horizons automatically across all {is2D ? '2D CMP stations' : '3D traces'}, compute isochore thickness, and calculate Gross Rock Volume.
           </p>
         </div>
 
@@ -246,7 +257,7 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
               className="w-full bg-[#0b1b30] border border-[#2a9bb0]/30 rounded px-2.5 py-1.5 text-xs text-[#e8f4f8] font-mono mb-2 focus:outline-none"
             />
             <div className="flex items-center gap-2 text-[11px] text-[#8aafc0]">
-              <span>Bin:</span>
+              <span>{is2D ? 'Trace dx:' : 'Bin:'}</span>
               <input
                 type="number"
                 min="5"
@@ -255,11 +266,23 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
                 onChange={(e) => {
                   const val = parseFloat(e.target.value) || 25;
                   setInlineSpacing(val);
-                  setCrosslineSpacing(val);
+                  if (!is2D) setCrosslineSpacing(val);
                 }}
-                className="w-14 bg-[#0b1b30] border border-[#2a9bb0]/30 rounded px-1.5 py-0.5 text-center font-mono text-[#e8f4f8]"
+                className="w-12 bg-[#0b1b30] border border-[#2a9bb0]/30 rounded px-1.5 py-0.5 text-center font-mono text-[#e8f4f8]"
               />
-              <span>m × m</span>
+              <span>{is2D ? 'm | Width:' : 'm ×'}</span>
+              {is2D && (
+                <input
+                  type="number"
+                  min="100"
+                  max="10000"
+                  step="100"
+                  value={crosslineSpacing}
+                  onChange={(e) => setCrosslineSpacing(parseFloat(e.target.value) || 1500)}
+                  className="w-14 bg-[#0b1b30] border border-[#2a9bb0]/30 rounded px-1.5 py-0.5 text-center font-mono text-[#e8f4f8]"
+                  title="Assumed lateral reservoir closure width across line (m)"
+                />
+              )}
             </div>
           </div>
         </div>
@@ -272,7 +295,7 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
             className="px-6 py-2.5 bg-[#2a9bb0] hover:bg-[#1a6b7a] text-[#0a1628] font-bold text-xs rounded-lg transition-all flex items-center gap-2 shadow-lg disabled:opacity-50"
           >
             <RefreshCw className={`w-4 h-4 ${isPicking ? 'animate-spin' : ''}`} />
-            {isPicking ? 'Auto-Tracking Horizon Surfaces...' : '⚡ Pick 3D Horizons & Compute GRV'}
+            {isPicking ? 'Auto-Tracking Horizon Surfaces...' : is2D ? '⚡ Track 2D Horizons & Compute GRV' : '⚡ Pick 3D Horizons & Compute GRV'}
           </button>
 
           {/* Structural Uncertainty Slider */}
@@ -337,7 +360,7 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
               {(horizonState.grvData.grvM3 / 1e6).toFixed(2)} Mm³
             </div>
             <div className="text-[11px] text-[#8aafc0]">
-              {horizonState.grvData.nCells.toLocaleString()} active bins
+              {horizonState.grvData.nCells.toLocaleString()} {is2D ? 'stations' : 'active bins'}
             </div>
           </div>
         </div>
@@ -356,7 +379,7 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
                     : 'text-[#8aafc0] hover:text-[#e8f4f8]'
                 }`}
               >
-                Top Horizon Map
+                {is2D ? 'Top Horizon Profile' : 'Top Horizon Map'}
               </button>
               <button
                 onClick={() => setActiveTab('base')}
@@ -366,7 +389,7 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
                     : 'text-[#8aafc0] hover:text-[#e8f4f8]'
                 }`}
               >
-                Base Horizon Map
+                {is2D ? 'Base Horizon Profile' : 'Base Horizon Map'}
               </button>
               <button
                 onClick={() => setActiveTab('isochore')}
@@ -376,7 +399,7 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
                     : 'text-[#8aafc0] hover:text-[#e8f4f8]'
                 }`}
               >
-                Isochore Thickness Map
+                {is2D ? 'Isochore Thickness Profile' : 'Isochore Thickness Map'}
               </button>
               <button
                 onClick={() => setActiveTab('3d')}
@@ -443,8 +466,8 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
           {activeTab === 'section' && (
             <SeismicSectionCanvas
               cube={cube}
-              sliceType="inline"
-              sliceIndex={Math.floor(cube.nInlines / 2)}
+              sliceType={is2D ? '2d-line' : 'inline'}
+              sliceIndex={is2D ? 0 : Math.floor(cube.nInlines / 2)}
               topHorizon={horizonState.topHorizon}
               baseHorizon={horizonState.baseHorizon}
               showHorizons={true}
