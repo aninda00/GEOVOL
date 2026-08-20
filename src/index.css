@@ -1,0 +1,51 @@
+@import "tailwindcss";
+
+:root {
+  --teal-dark: #0d3d4a;
+  --teal-mid: #1a6b7a;
+  --teal-light: #2a9bb0;
+  --accent: #f0a500;
+  --accent-light: #ffc840;
+  --bg-dark: #0a1628;
+  --bg-mid: #0f2139;
+  --bg-card: #162840;
+  --bg-card2: #1c3350;
+  --text-primary: #e8f4f8;
+  --text-secondary: #8aafc0;
+  --success: #2ecc71;
+  --warning: #f39c12;
+  --danger: #e74c3c;
+  --border: rgba(42, 155, 176, 0.25);
+}
+
+body {
+  font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--bg-dark);
+  color: var(--text-primary);
+  overflow-x: hidden;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0a1628;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #1a6b7a;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #2a9bb0;
+}
+
+/* Number input spinners */
+input[type=number]::-webkit-inner-spin-button, 
+input[type=number]::-webkit-outer-spin-button { 
+  opacity: 0.5;
+}
