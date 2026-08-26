@@ -9,6 +9,7 @@ import {
 import { HorizonMapCanvas } from '../components/HorizonMapCanvas';
 import { IsochoreMapCanvas } from '../components/IsochoreMapCanvas';
 import { ThreeDReservoirModel } from '../components/ThreeDReservoirModel';
+import { Interactive3DSeismicWindow } from '../components/Interactive3DSeismicWindow';
 import { SeismicSectionCanvas } from '../components/SeismicSectionCanvas';
 import {
   Sparkles,
@@ -455,11 +456,11 @@ export const Panel2Horizon: React.FC<Panel2HorizonProps> = ({
           )}
 
           {activeTab === '3d' && (
-            <ThreeDReservoirModel
-              topHorizon={horizonState.topHorizon}
-              baseHorizon={horizonState.baseHorizon}
-              sampleRate={cube.sampleRate}
-              velocityMs={horizonState.velocity}
+            <Interactive3DSeismicWindow
+              cube={cube}
+              horizonState={horizonState}
+              survey={cube.multiLineSurvey}
+              initialHeight={540}
             />
           )}
 

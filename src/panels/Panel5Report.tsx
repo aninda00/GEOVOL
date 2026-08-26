@@ -17,6 +17,7 @@ import {
   MapPin,
   Building,
   Sparkles,
+  FileCode,
 } from 'lucide-react';
 
 interface Panel5ReportProps {
@@ -191,21 +192,21 @@ export const Panel5Report: React.FC<Panel5ReportProps> = ({
             </div>
             <div className="font-bold text-sm text-[#e8f4f8]">Excel Workbook (.xlsx)</div>
             <div className="text-[11px] text-[#8aafc0] mt-1">
-              Multi-tab spreadsheet with executive summary & distributions
+              Multi-tab spreadsheet with summary & distributions
             </div>
           </button>
 
           {/* PDF Export */}
           <button
             onClick={handleExportPDF}
-            className="flex flex-col items-center justify-center p-5 bg-[#0b1b30] hover:bg-[#1a3d54] border border-[#e74c3c]/40 hover:border-[#e74c3c] rounded-xl transition-all group text-center shadow-md"
+            className="flex flex-col items-center justify-center p-5 bg-[#0b1b30] hover:bg-[#1a3d54] border border-[#e74c3c]/40 hover:border-[#e74c3c] rounded-xl transition-all group text-center shadow-md cursor-pointer"
           >
             <div className="p-3 bg-[#e74c3c]/20 text-[#e74c3c] rounded-xl mb-3 group-hover:scale-110 transition-transform">
               <FileText className="w-6 h-6" />
             </div>
             <div className="font-bold text-sm text-[#e8f4f8]">PDF Executive Report</div>
             <div className="text-[11px] text-[#8aafc0] mt-1">
-              Audit-ready document with formatted tables & parameters
+              Audit-ready document with formatted tables
             </div>
           </button>
 

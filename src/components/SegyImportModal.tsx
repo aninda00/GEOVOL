@@ -3,13 +3,17 @@ import {
   inspectSegyFile,
   parseSegyBuffer,
   decodeIBMFloat,
+  buildMultiLineSurvey,
+  interpolate2DLinesTo3DCube,
 } from '../modules/seismicEngine';
 import {
   SeismicDataset,
   SegyImportOptions,
   SeismicBinaryHeader,
   TraceHeader,
+  MultiLine2DSurvey,
 } from '../types';
+import { MultiLineSurveyBasemap } from './MultiLineSurveyBasemap';
 import {
   X,
   FileText,
@@ -25,39 +29,113 @@ import {
   Search,
   Copy,
   Check,
+  Box,
+  MapPin,
+  Sparkles,
+  Grid,
+  Compass,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 
-interface SegyImportModalProps {
+const LINE_PALETTE = [
+  '#00f0ff',
+  '#2ecc71',
+  '#f0a500',
+  '#e74c3c',
+  '#9b59b6',
+  '#3498db',
+  '#1abc9c',
+  '#e67e22',
+  '#ff007f',
+  '#00ffaa',
+];
+
+export interface SegyFileItem {
   file: File;
   buffer: ArrayBuffer;
+  name: string;
+}
+
+export interface SegyImportModalProps {
+  // Support both single file and multi-file props
+  file?: File;
+  buffer?: ArrayBuffer;
+  files?: SegyFileItem[];
   onConfirm: (dataset: SeismicDataset) => void;
   onCancel: () => void;
 }
 
 export const SegyImportModal: React.FC<SegyImportModalProps> = ({
-  file,
-  buffer,
+  file: propFile,
+  buffer: propBuffer,
+  files: propFiles,
   onConfirm,
   onCancel,
 }) => {
-  const [activeTab, setActiveTab] = useState<'overview' | 'text' | 'binary' | 'traces' | 'mapping'>('overview');
+  // Normalize file items
+  const fileItems: SegyFileItem[] = useMemo(() => {
+    if (propFiles && propFiles.length > 0) return propFiles;
+    if (propFile && propBuffer) {
+      return [{ file: propFile, buffer: propBuffer, name: propFile.name }];
+    }
+    return [];
+  }, [propFile, propBuffer, propFiles]);
+
+  const isMultiFile = fileItems.length > 1;
+
+  const [selectedFileIdx, setSelectedFileIdx] = useState<number>(0);
+  const [activeTab, setActiveTab] = useState<
+    'multiline' | 'synthesis' | 'overview' | 'text' | 'binary' | 'traces' | 'mapping'
+  >(isMultiFile ? 'multiline' : 'overview');
+
   const [copied, setCopied] = useState<boolean>(false);
   const [textSearch, setTextSearch] = useState<string>('');
 
-  // Import options
+  // 3D Construct Interpolation options
+  const [gridNx, setGridNx] = useState<number>(32);
+  const [gridNy, setGridNy] = useState<number>(32);
+  const [idwPower, setIdwPower] = useState<number>(2.0);
+  const [spatialSmoothing, setSpatialSmoothing] = useState<number>(0.5);
+  const [constructMode, setConstructMode] = useState<'3d_cube' | '2d_fence' | 'single_line'>(
+    isMultiFile ? '2d_fence' : 'single_line'
+  );
+
+  // Single file Import options
   const [datasetMode, setDatasetMode] = useState<'auto' | '2d' | '3d'>('auto');
   const [inlineByte, setInlineByte] = useState<number>(189);
   const [crosslineByte, setCrosslineByte] = useState<number>(193);
   const [cdpByte, setCdpByte] = useState<number>(21);
   const [spByte, setSpByte] = useState<number>(17);
   const [formatOverride, setFormatOverride] = useState<number>(0); // 0 = auto
+
+  const filesScrollRef = useRef<HTMLDivElement>(null);
+  const tabsScrollRef = useRef<HTMLDivElement>(null);
+
+  const scrollFiles = (direction: 'left' | 'right') => {
+    if (filesScrollRef.current) {
+      const offset = direction === 'left' ? -260 : 260;
+      filesScrollRef.current.scrollBy({ left: offset, behavior: 'smooth' });
+    }
+  };
+
+  const scrollTabs = (direction: 'left' | 'right') => {
+    if (tabsScrollRef.current) {
+      const offset = direction === 'left' ? -220 : 220;
+      tabsScrollRef.current.scrollBy({ left: offset, behavior: 'smooth' });
+    }
+  };
   const [endiannessOverride, setEndiannessOverride] = useState<'auto' | 'big' | 'little'>('auto');
   const [maxTraces, setMaxTraces] = useState<number>(5000);
 
   const previewCanvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Perform inspection
+  // Current active file item for inspection
+  const activeItem = fileItems[selectedFileIdx] || fileItems[0];
+
+  // Inspect currently selected file
   const inspection = useMemo(() => {
+    if (!activeItem) return { data: null, error: 'No file provided' };
     try {
       const options: SegyImportOptions = {
         mode: datasetMode,
@@ -70,7 +148,7 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
         maxTraces,
       };
       return {
-        data: inspectSegyFile(buffer, options),
+        data: inspectSegyFile(activeItem.buffer, options),
         error: null,
       };
     } catch (err: any) {
@@ -79,13 +157,42 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
         error: err.message || 'Failed to inspect SEG-Y headers',
       };
     }
-  }, [buffer, datasetMode, inlineByte, crosslineByte, cdpByte, spByte, formatOverride, endiannessOverride, maxTraces]);
+  }, [
+    activeItem,
+    datasetMode,
+    inlineByte,
+    crosslineByte,
+    cdpByte,
+    spByte,
+    formatOverride,
+    endiannessOverride,
+    maxTraces,
+  ]);
 
   const insp = inspection.data;
 
-  // Draw quick mini-preview
+  // Inspect all files for multi-line survey
+  const multiLineSurveyData = useMemo(() => {
+    if (!isMultiFile) return null;
+    try {
+      const parsedLines: SeismicDataset[] = [];
+      for (const item of fileItems) {
+        const ds = parseSegyBuffer(item.buffer, item.name, {
+          mode: '2d',
+          maxTraces: 4000,
+        });
+        parsedLines.push(ds);
+      }
+      const survey = buildMultiLineSurvey(parsedLines, `${fileItems.length}-Line 2D Exploration Survey`);
+      return { survey, error: null };
+    } catch (err: any) {
+      return { survey: null, error: err.message || 'Failed to parse multi-line survey' };
+    }
+  }, [fileItems, isMultiFile]);
+
+  // Mini-preview canvas for single active file
   useEffect(() => {
-    if (!insp || !previewCanvasRef.current) return;
+    if (!insp || !previewCanvasRef.current || !activeItem) return;
     const canvas = previewCanvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -100,7 +207,7 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
     const isLE = insp.isLittleEndian;
     const bytesPerSample = formatCode === 3 ? 2 : formatCode === 8 ? 1 : 4;
     const traceTotalSize = 240 + nSamples * bytesPerSample;
-    const view = new DataView(buffer);
+    const view = new DataView(activeItem.buffer);
 
     const imgData = ctx.createImageData(nTracesToPreview, nSamples);
     const buf = imgData.data;
@@ -114,7 +221,7 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
       for (let s = 0; s < nSamples; s++) {
         const offset = dataStart + s * bytesPerSample;
         let val = 0;
-        if (offset + 4 <= buffer.byteLength) {
+        if (offset + 4 <= activeItem.buffer.byteLength) {
           if (formatCode === 1) {
             val = decodeIBMFloat(view, offset);
           } else if (formatCode === 3) {
@@ -163,18 +270,34 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
       offCtx.putImageData(imgData, 0, 0);
       ctx.drawImage(offCanvas, 0, 0, width, height);
     }
-  }, [insp, buffer]);
+  }, [insp, activeItem]);
 
   const handleCopyTextHeader = () => {
-    if (insp?.textHeader) {
-      navigator.clipboard.writeText(insp.textHeader);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+    if (!insp) return;
+    navigator.clipboard.writeText(insp.textHeader);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const handleExecuteImport = () => {
-    try {
+    if (isMultiFile && constructMode === '3d_cube' && multiLineSurveyData?.survey) {
+      // 3D Spatial Interpolation from 2D lines
+      const cube = interpolate2DLinesTo3DCube(
+        multiLineSurveyData.survey,
+        gridNx,
+        gridNy,
+        idwPower,
+        spatialSmoothing
+      );
+      onConfirm(cube);
+    } else if (isMultiFile && constructMode === '2d_fence' && multiLineSurveyData?.survey) {
+      // 2D Multi-line survey aggregation (returns primary 2D line with survey metadata)
+      const primaryLine = multiLineSurveyData.survey.lines[0].dataset;
+      primaryLine.multiLineSurvey = multiLineSurveyData.survey;
+      onConfirm(primaryLine);
+    } else {
+      // Single 2D line or 3D cube
+      if (!activeItem) return;
       const options: SegyImportOptions = {
         mode: datasetMode,
         inlineByte,
@@ -185,387 +308,676 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
         endiannessOverride,
         maxTraces,
       };
-      const dataset = parseSegyBuffer(buffer, file.name, options);
+      const dataset = parseSegyBuffer(activeItem.buffer, activeItem.name, options);
       onConfirm(dataset);
-    } catch (err: any) {
-      alert(`Import failed: ${err.message}`);
     }
   };
 
-  const filteredTextLines = useMemo(() => {
-    if (!insp?.textHeader) return [];
-    const lines = insp.textHeader.split('\n');
-    if (!textSearch.trim()) return lines;
-    const q = textSearch.toLowerCase();
-    return lines.filter((l) => l.toLowerCase().includes(q));
-  }, [insp?.textHeader, textSearch]);
-
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
-      <div className="bg-[#0b1b30] border border-[#2a9bb0]/50 rounded-2xl w-full max-w-5xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden text-[#e8f4f8]">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-200">
+      <div className="bg-[#0b1b30] border border-[#2a9bb0]/40 rounded-2xl w-full max-w-6xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Modal Header */}
-        <div className="px-6 py-4 bg-[#0f2139] border-b border-[#2a9bb0]/30 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="p-2 bg-[#2a9bb0]/20 text-[#2a9bb0] rounded-lg">
-              <Cpu className="w-5 h-5" />
+        <div className="px-6 py-4 bg-[#0f2139] border-b border-[#2a9bb0]/30 flex items-center justify-between flex-shrink-0">
+          <div className="flex items-center gap-3.5">
+            <div className="p-2.5 bg-[#2a9bb0]/20 rounded-xl text-[#00f0ff] shadow-sm">
+              {isMultiFile ? <Grid className="w-5 h-5" /> : <Activity className="w-5 h-5" />}
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white flex items-center gap-2">
-                SEG-Y Import Wizard & Header Inspector
-                <span className="text-xs font-mono font-normal px-2 py-0.5 rounded bg-[#2a9bb0]/20 text-[#2a9bb0]">
-                  {file.name}
+              <h2 className="text-base font-bold text-[#e8f4f8] flex items-center gap-2.5">
+                <span>{isMultiFile ? 'Multi-File 2D SEG-Y Survey & 3D Constructor' : 'SEG-Y Seismic Header & Format Inspector'}</span>
+                <span className="text-xs font-mono px-2.5 py-0.5 rounded-full bg-[#1a3d54] text-[#00f0ff] border border-[#2a9bb0]/40 font-bold">
+                  {fileItems.length} File{fileItems.length > 1 ? 's' : ''}
                 </span>
               </h2>
-              <p className="text-xs text-[#8aafc0]">
-                Petrel-style header scanner, 2D line vs 3D volume geometry decoder, and sample converter.
+              <p className="text-xs text-[#8aafc0] mt-0.5">
+                {isMultiFile
+                  ? 'Parse multiple 2D SEG-Y lines, align spatial coordinates, and synthesize a full 3D seismic volume construct.'
+                  : `File: ${activeItem?.name} (${Math.round((activeItem?.buffer.byteLength || 0) / (1024 * 1024) * 10) / 10} MB)`}
               </p>
             </div>
           </div>
 
           <button
             onClick={onCancel}
-            className="p-1.5 rounded-lg text-[#8aafc0] hover:text-white hover:bg-white/10 transition-colors"
+            className="p-2 rounded-xl text-[#8aafc0] hover:text-white hover:bg-white/10 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Tab Navigation */}
-        <div className="flex border-b border-[#2a9bb0]/20 bg-[#071322] px-6 text-xs font-medium">
+        {/* Multi-File Selector Bar (if multi-file) */}
+        {isMultiFile && (
+          <div className="px-6 py-2.5 bg-[#061220] border-b border-[#2a9bb0]/25 flex items-center gap-2.5 flex-shrink-0">
+            <div className="text-[11px] font-bold text-[#00f0ff] uppercase tracking-wider flex-shrink-0 flex items-center gap-1.5">
+              <Layers className="w-3.5 h-3.5" /> Survey Files ({fileItems.length}):
+            </div>
+
+            {/* Scroll Left Button */}
+            <button
+              onClick={() => scrollFiles('left')}
+              title="Scroll files left"
+              className="p-1 rounded-md bg-[#0b1b30] border border-[#2a9bb0]/30 text-[#8aafc0] hover:text-[#00f0ff] hover:border-[#00f0ff]/50 transition-colors flex-shrink-0"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+
+            {/* Scrollable File Chips Container with distinct separated scrollbar */}
+            <div
+              ref={filesScrollRef}
+              onWheel={(e) => {
+                if (e.deltaY !== 0) {
+                  e.currentTarget.scrollLeft += e.deltaY;
+                }
+              }}
+              className="flex items-center gap-2 overflow-x-auto py-1 pb-2.5 custom-scrollbar-x flex-1"
+            >
+              {fileItems.map((item, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => setSelectedFileIdx(idx)}
+                  className={`px-3.5 py-1.5 text-xs rounded-lg font-mono flex items-center gap-2 transition-all flex-shrink-0 whitespace-nowrap ${
+                    selectedFileIdx === idx
+                      ? 'bg-[#1a3d54] text-[#00f0ff] font-bold border border-[#00f0ff]/60 shadow-md ring-1 ring-[#00f0ff]/30'
+                      : 'bg-[#0b1b30] text-[#8aafc0] border border-[#2a9bb0]/20 hover:text-white hover:border-[#2a9bb0]/40'
+                  }`}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: LINE_PALETTE[idx % LINE_PALETTE.length] }} />
+                  <span className="font-semibold">{item.name}</span>
+                  <span className="text-[10px] text-[#8aafc0]">
+                    ({Math.round(item.buffer.byteLength / (1024 * 1024) * 10) / 10}MB)
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {/* Scroll Right Button */}
+            <button
+              onClick={() => scrollFiles('right')}
+              title="Scroll files right"
+              className="p-1 rounded-md bg-[#0b1b30] border border-[#2a9bb0]/30 text-[#8aafc0] hover:text-[#00f0ff] hover:border-[#00f0ff]/50 transition-colors flex-shrink-0"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        {/* Modal Navigation Tabs */}
+        <div className="px-6 py-2 bg-[#0a1628] border-b border-[#2a9bb0]/20 flex items-center gap-2 flex-shrink-0">
+          {/* Scroll Left Button */}
           <button
-            onClick={() => setActiveTab('overview')}
-            className={`px-4 py-3 flex items-center gap-2 border-b-2 transition-colors ${
-              activeTab === 'overview'
-                ? 'border-[#2a9bb0] text-[#2a9bb0] font-bold bg-[#0b1b30]'
-                : 'border-transparent text-[#8aafc0] hover:text-[#e8f4f8]'
-            }`}
+            onClick={() => scrollTabs('left')}
+            title="Scroll tabs left"
+            className="p-1 rounded-md bg-[#071322] border border-[#2a9bb0]/30 text-[#8aafc0] hover:text-[#00f0ff] hover:border-[#00f0ff]/50 transition-colors flex-shrink-0"
           >
-            <Activity className="w-4 h-4" /> Geometry & Mode
+            <ChevronLeft className="w-4 h-4" />
           </button>
 
-          <button
-            onClick={() => setActiveTab('text')}
-            className={`px-4 py-3 flex items-center gap-2 border-b-2 transition-colors ${
-              activeTab === 'text'
-                ? 'border-[#2a9bb0] text-[#2a9bb0] font-bold bg-[#0b1b30]'
-                : 'border-transparent text-[#8aafc0] hover:text-[#e8f4f8]'
-            }`}
+          {/* Scrollable Tabs Container with distinct separated scrollbar */}
+          <div
+            ref={tabsScrollRef}
+            onWheel={(e) => {
+              if (e.deltaY !== 0) {
+                e.currentTarget.scrollLeft += e.deltaY;
+              }
+            }}
+            className="flex items-center gap-2 overflow-x-auto py-1 pb-2.5 custom-scrollbar-x flex-1 text-xs"
           >
-            <FileText className="w-4 h-4" /> Text Header (3200B)
-          </button>
+            {isMultiFile && (
+              <>
+                <button
+                  onClick={() => setActiveTab('multiline')}
+                  className={`py-2 px-3.5 rounded-lg font-semibold flex items-center gap-2 transition-all whitespace-nowrap text-xs flex-shrink-0 ${
+                    activeTab === 'multiline'
+                      ? 'bg-[#00f0ff]/15 text-[#00f0ff] border border-[#00f0ff]/40 shadow-sm font-bold'
+                      : 'text-[#8aafc0] hover:text-white hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <Compass className="w-4 h-4 text-[#00f0ff]" /> 2D Survey & 3D Spatial Fence HUD
+                </button>
 
-          <button
-            onClick={() => setActiveTab('binary')}
-            className={`px-4 py-3 flex items-center gap-2 border-b-2 transition-colors ${
-              activeTab === 'binary'
-                ? 'border-[#2a9bb0] text-[#2a9bb0] font-bold bg-[#0b1b30]'
-                : 'border-transparent text-[#8aafc0] hover:text-[#e8f4f8]'
-            }`}
-          >
-            <Binary className="w-4 h-4" /> Binary Header (400B)
-          </button>
+                <button
+                  onClick={() => setActiveTab('synthesis')}
+                  className={`py-2 px-3.5 rounded-lg font-semibold flex items-center gap-2 transition-all whitespace-nowrap text-xs flex-shrink-0 ${
+                    activeTab === 'synthesis'
+                      ? 'bg-[#f0a500]/15 text-[#f0a500] border border-[#f0a500]/40 shadow-sm font-bold'
+                      : 'text-[#8aafc0] hover:text-white hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <Sparkles className="w-4 h-4 text-[#f0a500]" /> 3D Volume Synthesizer (IDW)
+                </button>
+              </>
+            )}
 
-          <button
-            onClick={() => setActiveTab('traces')}
-            className={`px-4 py-3 flex items-center gap-2 border-b-2 transition-colors ${
-              activeTab === 'traces'
-                ? 'border-[#2a9bb0] text-[#2a9bb0] font-bold bg-[#0b1b30]'
-                : 'border-transparent text-[#8aafc0] hover:text-[#e8f4f8]'
-            }`}
-          >
-            <ListFilter className="w-4 h-4" /> Trace Headers (240B)
-          </button>
+            <button
+              onClick={() => setActiveTab('overview')}
+              className={`py-2 px-3.5 rounded-lg font-semibold flex items-center gap-2 transition-all whitespace-nowrap text-xs flex-shrink-0 ${
+                activeTab === 'overview'
+                  ? 'bg-[#00f0ff]/15 text-[#00f0ff] border border-[#00f0ff]/40 shadow-sm font-bold'
+                  : 'text-[#8aafc0] hover:text-white hover:bg-white/5 border border-transparent'
+              }`}
+            >
+              <Eye className="w-4 h-4" /> Single Profile Preview
+            </button>
 
+            <button
+              onClick={() => setActiveTab('text')}
+              className={`py-2 px-3.5 rounded-lg font-semibold flex items-center gap-2 transition-all whitespace-nowrap text-xs flex-shrink-0 ${
+                activeTab === 'text'
+                  ? 'bg-[#00f0ff]/15 text-[#00f0ff] border border-[#00f0ff]/40 shadow-sm font-bold'
+                  : 'text-[#8aafc0] hover:text-white hover:bg-white/5 border border-transparent'
+              }`}
+            >
+              <FileText className="w-4 h-4" /> Text Header
+            </button>
+
+            <button
+              onClick={() => setActiveTab('binary')}
+              className={`py-2 px-3.5 rounded-lg font-semibold flex items-center gap-2 transition-all whitespace-nowrap text-xs flex-shrink-0 ${
+                activeTab === 'binary'
+                  ? 'bg-[#00f0ff]/15 text-[#00f0ff] border border-[#00f0ff]/40 shadow-sm font-bold'
+                  : 'text-[#8aafc0] hover:text-white hover:bg-white/5 border border-transparent'
+              }`}
+            >
+              <Binary className="w-4 h-4" /> Binary Header
+            </button>
+
+            <button
+              onClick={() => setActiveTab('traces')}
+              className={`py-2 px-3.5 rounded-lg font-semibold flex items-center gap-2 transition-all whitespace-nowrap text-xs flex-shrink-0 ${
+                activeTab === 'traces'
+                  ? 'bg-[#00f0ff]/15 text-[#00f0ff] border border-[#00f0ff]/40 shadow-sm font-bold'
+                  : 'text-[#8aafc0] hover:text-white hover:bg-white/5 border border-transparent'
+              }`}
+            >
+              <ListFilter className="w-4 h-4" /> Trace Headers
+            </button>
+
+            <button
+              onClick={() => setActiveTab('mapping')}
+              className={`py-2 px-3.5 rounded-lg font-semibold flex items-center gap-2 transition-all whitespace-nowrap text-xs flex-shrink-0 ${
+                activeTab === 'mapping'
+                  ? 'bg-[#00f0ff]/15 text-[#00f0ff] border border-[#00f0ff]/40 shadow-sm font-bold'
+                  : 'text-[#8aafc0] hover:text-white hover:bg-white/5 border border-transparent'
+              }`}
+            >
+              <Sliders className="w-4 h-4" /> Byte Overrides
+            </button>
+          </div>
+
+          {/* Scroll Right Button */}
           <button
-            onClick={() => setActiveTab('mapping')}
-            className={`px-4 py-3 flex items-center gap-2 border-b-2 transition-colors ${
-              activeTab === 'mapping'
-                ? 'border-[#2a9bb0] text-[#2a9bb0] font-bold bg-[#0b1b30]'
-                : 'border-transparent text-[#8aafc0] hover:text-[#e8f4f8]'
-            }`}
+            onClick={() => scrollTabs('right')}
+            title="Scroll tabs right"
+            className="p-1 rounded-md bg-[#071322] border border-[#2a9bb0]/30 text-[#8aafc0] hover:text-[#00f0ff] hover:border-[#00f0ff]/50 transition-colors flex-shrink-0"
           >
-            <Sliders className="w-4 h-4" /> Byte Mapping & Overrides
+            <ChevronRight className="w-4 h-4" />
           </button>
         </div>
 
         {/* Modal Body */}
-        <div className="flex-1 p-6 overflow-y-auto min-h-[360px]">
-          {inspection.error && (
-            <div className="p-4 bg-red-950/60 border border-red-500/50 rounded-xl text-red-300 text-sm flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 flex-shrink-0 text-red-400 mt-0.5" />
-              <div>
-                <div className="font-bold">Error Inspecting File</div>
-                <div className="text-xs text-red-400 mt-0.5">{inspection.error}</div>
-              </div>
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 pb-8">
+          {/* TAB 0: 2D SURVEY & 3D SPATIAL FENCE HUD */}
+          {activeTab === 'multiline' && isMultiFile && (
+            <div className="space-y-6">
+              {multiLineSurveyData?.survey ? (
+                <>
+                  {/* Mode Banner */}
+                  <div className="bg-[#0f253d] border border-[#00f0ff]/30 rounded-xl p-4 shadow-lg flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <span className="px-2 py-0.5 rounded bg-[#00f0ff]/20 text-[#00f0ff] text-[10px] font-bold uppercase tracking-wider border border-[#00f0ff]/40">
+                          Recommended Mode
+                        </span>
+                        <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                          3D Spatial Multi-Line Fence HUD
+                        </h3>
+                      </div>
+                      <p className="text-xs text-[#8aafc0]">
+                        Loads all {fileItems.length} 2D seismic lines at their true spatial positions, orientations, and azimuths in an interactive 3D spatial window without unwanted 3D volume interpolation artifacts.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <label className="flex items-center gap-2 cursor-pointer bg-[#071322] px-3 py-2 rounded-lg border border-[#2a9bb0]/30 hover:border-[#00f0ff]/50 transition-colors">
+                        <input
+                          type="radio"
+                          name="constructMode"
+                          checked={constructMode === '2d_fence'}
+                          onChange={() => setConstructMode('2d_fence')}
+                          className="accent-[#00f0ff]"
+                        />
+                        <span className="text-xs font-bold text-[#00f0ff]">3D Spatial Fence HUD</span>
+                      </label>
+                      <label className="flex items-center gap-2 cursor-pointer bg-[#071322] px-3 py-2 rounded-lg border border-[#2a9bb0]/30 hover:border-[#f0a500]/50 transition-colors">
+                        <input
+                          type="radio"
+                          name="constructMode"
+                          checked={constructMode === '3d_cube'}
+                          onChange={() => setConstructMode('3d_cube')}
+                          className="accent-[#f0a500]"
+                        />
+                        <span className="text-xs font-bold text-[#f0a500]">3D Interpolated Cube</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Survey Stats Grid */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/25">
+                      <span className="text-[10px] uppercase font-bold text-[#8aafc0]">Survey Profiles</span>
+                      <div className="text-lg font-bold font-mono text-[#00f0ff] mt-0.5">
+                        {multiLineSurveyData.survey.lines.length} Lines
+                      </div>
+                      <span className="text-[10px] text-[#8aafc0]">
+                        {multiLineSurveyData.survey.lines.reduce((acc, l) => acc + l.dataset.nTraces, 0).toLocaleString()} Total Traces
+                      </span>
+                    </div>
+
+                    <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/25">
+                      <span className="text-[10px] uppercase font-bold text-[#8aafc0]">Cross-Tie Points</span>
+                      <div className="text-lg font-bold font-mono text-[#2ecc71] mt-0.5">
+                        {multiLineSurveyData.survey.intersections.length} Intersections
+                      </div>
+                      <span className="text-[10px] text-[#8aafc0]">Auto-aligned profiles</span>
+                    </div>
+
+                    <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/25">
+                      <span className="text-[10px] uppercase font-bold text-[#8aafc0]">Coordinate Bounds</span>
+                      <div className="text-xs font-bold font-mono text-[#f0a500] mt-1 truncate">
+                        {multiLineSurveyData.survey.bounds.minX}m - {multiLineSurveyData.survey.bounds.maxX}m
+                      </div>
+                      <span className="text-[10px] text-[#8aafc0] font-mono">
+                        Y: {multiLineSurveyData.survey.bounds.minY}m - {multiLineSurveyData.survey.bounds.maxY}m
+                      </span>
+                    </div>
+
+                    <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/25">
+                      <span className="text-[10px] uppercase font-bold text-[#8aafc0]">Sample Extent</span>
+                      <div className="text-lg font-bold font-mono text-[#e8f4f8] mt-0.5">
+                        {multiLineSurveyData.survey.nSamples} S / {multiLineSurveyData.survey.sampleRate} ms
+                      </div>
+                      <span className="text-[10px] text-[#8aafc0]">
+                        0 - {multiLineSurveyData.survey.bounds.maxT} ms TWT
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* 2D Line Table & Basemap */}
+                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                    {/* Left: Line Details List */}
+                    <div className="bg-[#0f2139] border border-[#2a9bb0]/25 rounded-xl p-4 space-y-2.5 max-h-80 overflow-y-auto">
+                      <div className="text-xs font-bold text-[#e8f4f8] uppercase tracking-wider flex items-center justify-between">
+                        <span>Profile Orientations</span>
+                        <span className="text-[10px] text-[#8aafc0] font-normal">Azimuth & Length</span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {multiLineSurveyData.survey.lines.map((line, idx) => (
+                          <div
+                            key={line.id}
+                            className="p-2 bg-[#071322] border border-[#2a9bb0]/20 rounded-lg flex items-center justify-between text-xs"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                                style={{ backgroundColor: line.color }}
+                              />
+                              <div className="truncate max-w-[140px]">
+                                <div className="font-bold text-[#e8f4f8] truncate">{line.name}</div>
+                                <div className="text-[10px] text-[#8aafc0] font-mono">{line.dataset.nTraces} Traces</div>
+                              </div>
+                            </div>
+                            <div className="text-right font-mono text-[10px]">
+                              <div className="text-[#00f0ff] font-bold">{line.azimuthDeg}° Az</div>
+                              <div className="text-[#8aafc0]">{(line.lengthM / 1000).toFixed(1)} km</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Right: Interactive Basemap */}
+                    <div className="lg:col-span-2">
+                      <MultiLineSurveyBasemap survey={multiLineSurveyData.survey} />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="p-8 bg-[#0f2139] border border-red-500/30 rounded-xl text-center">
+                  <AlertTriangle className="w-8 h-8 text-red-400 mx-auto mb-2" />
+                  <div className="text-sm font-bold text-red-400">Failed to Parse Multi-Line Survey</div>
+                  <p className="text-xs text-[#8aafc0] mt-1">{multiLineSurveyData?.error}</p>
+                </div>
+              )}
             </div>
           )}
 
-          {insp && activeTab === 'overview' && (
-            <div className="space-y-5">
-              {/* Dataset Type Selection */}
-              <div className="bg-[#071322] border border-[#2a9bb0]/30 rounded-xl p-4">
-                <h3 className="text-xs font-bold text-[#2a9bb0] uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <Layers className="w-4 h-4" /> Seismic Dataset Classification
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <div
-                    onClick={() => setDatasetMode('2d')}
-                    className={`cursor-pointer p-4 rounded-xl border transition-all ${
-                      (datasetMode === '2d' || (datasetMode === 'auto' && insp.detectedType === '2d'))
-                        ? 'bg-[#16354f] border-[#2ecc71] shadow-lg ring-1 ring-[#2ecc71]'
-                        : 'bg-[#0b1b30] border-[#2a9bb0]/20 hover:border-[#2a9bb0]/50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-bold text-sm text-[#2ecc71] flex items-center gap-2">
-                        <span>📈</span> 2D Seismic Line Profile
-                      </div>
-                      {insp.detectedType === '2d' && (
-                        <span className="text-[10px] bg-[#2ecc71]/20 text-[#2ecc71] px-2 py-0.5 rounded font-mono font-bold">
-                          Auto-Detected (Confidence 98%)
-                        </span>
-                      )}
+          {/* TAB 0B: OPTIONAL 3D VOLUME SYNTHESIZER */}
+          {activeTab === 'synthesis' && isMultiFile && (
+            <div className="space-y-6">
+              {multiLineSurveyData?.survey ? (
+                <div className="bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl p-5 shadow-lg space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-sm font-bold text-[#e8f4f8] flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-[#f0a500]" /> 3D Volume Synthesis Parameters (IDW Grid)
+                      </h3>
+                      <p className="text-xs text-[#8aafc0] mt-0.5">
+                        Synthesizes regular 3D grid nodes using spatial Inverse Distance Weighting across all {fileItems.length} loaded 2D lines.
+                      </p>
                     </div>
-                    <p className="text-xs text-[#8aafc0] leading-relaxed">
-                      Single continuous 2D seismic profile along CMP / Shot Point stations ({insp.totalTraces} traces).
-                      Preserves exact linear acquisition ordering without artificial 3D chunking.
-                    </p>
-                  </div>
-
-                  <div
-                    onClick={() => setDatasetMode('3d')}
-                    className={`cursor-pointer p-4 rounded-xl border transition-all ${
-                      (datasetMode === '3d' || (datasetMode === 'auto' && insp.detectedType === '3d'))
-                        ? 'bg-[#16354f] border-[#00f0ff] shadow-lg ring-1 ring-[#00f0ff]'
-                        : 'bg-[#0b1b30] border-[#2a9bb0]/20 hover:border-[#2a9bb0]/50'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="font-bold text-sm text-[#00f0ff] flex items-center gap-2">
-                        <span>🧊</span> 3D Seismic Volume (Cube)
-                      </div>
-                      {insp.detectedType === '3d' && (
-                        <span className="text-[10px] bg-[#00f0ff]/20 text-[#00f0ff] px-2 py-0.5 rounded font-mono font-bold">
-                          Auto-Detected
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-[#8aafc0] leading-relaxed">
-                      Multi-dimensional 3D grid with distinct Inlines (byte {inlineByte}) and Crosslines (byte {crosslineByte}).
-                      {insp.uniqueInlines.length > 0 && ` Found ${insp.uniqueInlines.length} inlines × ${insp.uniqueCrosslines.length} crosslines.`}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Metrics & Preview Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {/* File Specs Table */}
-                <div className="bg-[#071322] border border-[#2a9bb0]/20 rounded-xl p-4 md:col-span-2 space-y-3">
-                  <h4 className="text-xs font-bold text-[#8aafc0] uppercase tracking-wider">
-                    Header Analysis & Key Parameters
-                  </h4>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
-                    <div className="bg-[#0b1b30] p-2.5 rounded-lg border border-[#2a9bb0]/20">
-                      <span className="text-[10px] text-[#8aafc0] block">Total File Traces</span>
-                      <span className="text-base font-bold font-mono text-[#00f0ff]">{insp.totalTraces.toLocaleString()}</span>
-                    </div>
-
-                    <div className="bg-[#0b1b30] p-2.5 rounded-lg border border-[#2a9bb0]/20">
-                      <span className="text-[10px] text-[#8aafc0] block">Samples Per Trace</span>
-                      <span className="text-base font-bold font-mono text-[#e8f4f8]">{insp.nSamples}</span>
-                    </div>
-
-                    <div className="bg-[#0b1b30] p-2.5 rounded-lg border border-[#2a9bb0]/20">
-                      <span className="text-[10px] text-[#8aafc0] block">Sample Interval (dt)</span>
-                      <span className="text-base font-bold font-mono text-[#f0a500]">{insp.sampleRate} ms</span>
-                    </div>
-
-                    <div className="bg-[#0b1b30] p-2.5 rounded-lg border border-[#2a9bb0]/20">
-                      <span className="text-[10px] text-[#8aafc0] block">Data Sample Format</span>
-                      <span className="text-xs font-bold font-mono text-[#2ecc71] block truncate" title={insp.binaryHeader.formatDescription}>
-                        {insp.binaryHeader.formatDescription} (Code {insp.formatCode})
-                      </span>
-                    </div>
-
-                    <div className="bg-[#0b1b30] p-2.5 rounded-lg border border-[#2a9bb0]/20">
-                      <span className="text-[10px] text-[#8aafc0] block">Byte Endianness</span>
-                      <span className="text-sm font-bold font-mono text-[#e8f4f8]">
-                        {insp.isLittleEndian ? 'Little-Endian (PC)' : 'Big-Endian (Standard)'}
-                      </span>
-                    </div>
-
-                    <div className="bg-[#0b1b30] p-2.5 rounded-lg border border-[#2a9bb0]/20">
-                      <span className="text-[10px] text-[#8aafc0] block">Total Time Window</span>
-                      <span className="text-base font-bold font-mono text-[#00f0ff]">
-                        {Math.round((insp.nSamples - 1) * insp.sampleRate)} ms
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Summary note */}
-                  <div className="p-3 bg-[#0b1b30] rounded-lg border border-[#2a9bb0]/20 text-xs text-[#8aafc0] flex items-center gap-2">
-                    <CheckCircle2 className="w-4 h-4 text-[#2ecc71] flex-shrink-0" />
-                    <span>
-                      {insp.detectedType === '2d'
-                        ? '2D seismic line detected: Traces will be indexed by CDP / Shot Point along the profile.'
-                        : `3D seismic volume detected: Geometry resolved to ${insp.uniqueInlines.length} Inlines × ${insp.uniqueCrosslines.length} Crosslines.`}
+                    <span className="text-xs font-mono px-2.5 py-1 rounded bg-[#2ecc71]/20 text-[#2ecc71] border border-[#2ecc71]/40 font-bold">
+                      {multiLineSurveyData.survey.intersections.length} Cross-Tie Intersections
                     </span>
                   </div>
-                </div>
 
-                {/* Live Mini Preview Canvas */}
-                <div className="bg-[#071322] border border-[#2a9bb0]/20 rounded-xl p-4 flex flex-col items-center justify-between">
-                  <div className="w-full flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-[#8aafc0] uppercase tracking-wider flex items-center gap-1.5">
-                      <Eye className="w-3.5 h-3.5 text-[#2a9bb0]" /> Data QC Preview
-                    </span>
-                    <span className="text-[10px] text-[#8aafc0] font-mono">First 120 Traces</span>
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    {/* Grid Dimensions */}
+                    <div>
+                      <label className="text-[11px] text-[#8aafc0] block mb-1">
+                        Inlines Grid (Ny)
+                      </label>
+                      <select
+                        value={gridNy}
+                        onChange={(e) => setGridNy(parseInt(e.target.value, 10))}
+                        className="w-full px-3 py-2 bg-[#071322] border border-[#2a9bb0]/30 rounded-lg text-xs font-mono text-white"
+                      >
+                        <option value={24}>24 Inlines (Fast)</option>
+                        <option value={32}>32 Inlines (Standard)</option>
+                        <option value={48}>48 Inlines (High Detail)</option>
+                        <option value={64}>64 Inlines (Ultra-Dense)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="text-[11px] text-[#8aafc0] block mb-1">
+                        Crosslines Grid (Nx)
+                      </label>
+                      <select
+                        value={gridNx}
+                        onChange={(e) => setGridNx(parseInt(e.target.value, 10))}
+                        className="w-full px-3 py-2 bg-[#071322] border border-[#2a9bb0]/30 rounded-lg text-xs font-mono text-white"
+                      >
+                        <option value={24}>24 Crosslines</option>
+                        <option value={32}>32 Crosslines (Standard)</option>
+                        <option value={48}>48 Crosslines (High Detail)</option>
+                        <option value={64}>64 Crosslines (Ultra-Dense)</option>
+                      </select>
+                    </div>
+
+                    {/* IDW Power */}
+                    <div>
+                      <label className="text-[11px] text-[#8aafc0] block mb-1">
+                        IDW Distance Power (p): {idwPower}
+                      </label>
+                      <input
+                        type="range"
+                        min="1"
+                        max="4"
+                        step="0.5"
+                        value={idwPower}
+                        onChange={(e) => setIdwPower(parseFloat(e.target.value))}
+                        className="w-full h-2 bg-[#1a3d54] rounded accent-[#00f0ff]"
+                      />
+                      <div className="flex justify-between text-[9px] text-[#8aafc0] mt-0.5">
+                        <span>1.0 (Diffuse)</span>
+                        <span>2.0 (Inverse Sq)</span>
+                        <span>4.0 (Sharp)</span>
+                      </div>
+                    </div>
+
+                    {/* Spatial Smoothing */}
+                    <div>
+                      <label className="text-[11px] text-[#8aafc0] block mb-1">
+                        Spatial 3D Smoothing: {Math.round(spatialSmoothing * 100)}%
+                      </label>
+                      <input
+                        type="range"
+                        min="0"
+                        max="0.8"
+                        step="0.1"
+                        value={spatialSmoothing}
+                        onChange={(e) => setSpatialSmoothing(parseFloat(e.target.value))}
+                        className="w-full h-2 bg-[#1a3d54] rounded accent-[#2ecc71]"
+                      />
+                      <div className="flex justify-between text-[9px] text-[#8aafc0] mt-0.5">
+                        <span>None</span>
+                        <span>Standard (50%)</span>
+                        <span>Max Filter</span>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="relative w-full h-[180px] bg-black rounded-lg overflow-hidden border border-[#2a9bb0]/30 shadow-inner flex items-center justify-center">
-                    <canvas
-                      ref={previewCanvasRef}
-                      width={160}
-                      height={200}
-                      className="w-full h-full object-fill"
-                    />
+                  <div className="pt-3 border-t border-[#2a9bb0]/20 flex items-center justify-between">
+                    <p className="text-xs text-[#8aafc0]">
+                      Clicking button below will interpolate a dense 3D Seismic Cube for orthogonal slicing.
+                    </p>
+                    <button
+                      onClick={() => setConstructMode('3d_cube')}
+                      className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                        constructMode === '3d_cube'
+                          ? 'bg-[#00f0ff] text-[#0a1628]'
+                          : 'bg-[#1a3d54] text-[#8aafc0] hover:text-white'
+                      }`}
+                    >
+                      {constructMode === '3d_cube' ? '✓ Selected: Construct 3D Cube' : 'Select 3D Cube Mode'}
+                    </button>
                   </div>
-
-                  <span className="text-[10px] text-[#8aafc0] text-center mt-2">
-                    Direct IBM-32 / IEEE-32 floating point rasterization
-                  </span>
                 </div>
-              </div>
+              ) : null}
             </div>
           )}
 
-          {insp && activeTab === 'text' && (
+          {/* TAB 1: OVERVIEW & GEOMETRY */}
+          {activeTab === 'overview' && (
+            <div className="space-y-6">
+              {inspection.error ? (
+                <div className="p-6 bg-red-950/40 border border-red-500/40 rounded-xl text-center space-y-2">
+                  <AlertTriangle className="w-8 h-8 text-red-400 mx-auto" />
+                  <h3 className="text-sm font-bold text-red-200">SEG-Y Header Parse Warning</h3>
+                  <p className="text-xs text-red-300 max-w-md mx-auto">{inspection.error}</p>
+                </div>
+              ) : insp ? (
+                <>
+                  {/* Geometry Cards */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                    <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/25">
+                      <span className="text-[10px] uppercase font-bold text-[#8aafc0]">Detected Geometry</span>
+                      <div className="text-base font-bold font-mono text-[#00f0ff] mt-1">
+                        {insp.detectedType === '2d' ? '2D Seismic Profile' : '3D Seismic Volume'}
+                      </div>
+                      <span className="text-[10px] text-[#8aafc0]">
+                        {insp.detectedType === '2d' ? 'Single Line Transect' : `${insp.uniqueInlines.length} IL × ${insp.uniqueCrosslines.length} XL`}
+                      </span>
+                    </div>
+
+                    <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/25">
+                      <span className="text-[10px] uppercase font-bold text-[#8aafc0]">Total Traces</span>
+                      <div className="text-base font-bold font-mono text-[#2ecc71] mt-1">
+                        {insp.totalTraces.toLocaleString()}
+                      </div>
+                      <span className="text-[10px] text-[#8aafc0]">Max import: {maxTraces.toLocaleString()}</span>
+                    </div>
+
+                    <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/25">
+                      <span className="text-[10px] uppercase font-bold text-[#8aafc0]">Sample Rate (dt)</span>
+                      <div className="text-base font-bold font-mono text-[#f0a500] mt-1">
+                        {insp.sampleRate} ms
+                      </div>
+                      <span className="text-[10px] text-[#8aafc0]">{insp.binaryHeader.sampleIntervalUs} µs interval</span>
+                    </div>
+
+                    <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/25">
+                      <span className="text-[10px] uppercase font-bold text-[#8aafc0]">Format & Endianness</span>
+                      <div className="text-base font-bold font-mono text-[#e8f4f8] mt-1 truncate">
+                        {insp.binaryHeader.formatDescription.split(' ')[0]}
+                      </div>
+                      <span className="text-[10px] text-[#8aafc0]">
+                        {insp.isLittleEndian ? 'Little-Endian (PC)' : 'Big-Endian (SEG-Y Std)'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Section Visualizer Preview */}
+                  <div className="bg-[#0f2139] p-4 rounded-xl border border-[#2a9bb0]/30 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <h4 className="text-xs font-bold uppercase tracking-wider text-[#e8f4f8] flex items-center gap-2">
+                        <Activity className="w-4 h-4 text-[#00f0ff]" /> Quick Trace Amplitude Preview (First 120 Traces)
+                      </h4>
+                      <span className="text-[10px] font-mono text-[#8aafc0]">
+                        {insp.nSamples} Samples | TWT {((insp.nSamples - 1) * insp.sampleRate).toFixed(0)} ms
+                      </span>
+                    </div>
+
+                    <div className="bg-[#071322] rounded-lg p-2 border border-[#2a9bb0]/20 flex justify-center">
+                      <canvas
+                        ref={previewCanvasRef}
+                        width={600}
+                        height={180}
+                        className="w-full h-[180px] rounded object-fill"
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          )}
+
+          {/* TAB 2: 3200-BYTE TEXTUAL HEADER */}
+          {activeTab === 'text' && insp && (
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="relative flex-1 max-w-sm">
-                  <Search className="w-3.5 h-3.5 absolute left-3 top-3 text-[#8aafc0]" />
+              <div className="flex items-center justify-between gap-4">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 absolute left-3 top-2.5 text-[#8aafc0]" />
                   <input
                     type="text"
-                    placeholder="Search textual header (e.g. INLINE, CLIENT, PROJECTION)..."
+                    placeholder="Search textual header comments..."
                     value={textSearch}
                     onChange={(e) => setTextSearch(e.target.value)}
-                    className="w-full pl-9 pr-3 py-1.5 bg-[#071322] border border-[#2a9bb0]/30 rounded-lg text-xs text-[#e8f4f8] focus:outline-none focus:border-[#2a9bb0]"
+                    className="w-full pl-9 pr-4 py-2 bg-[#071322] border border-[#2a9bb0]/30 rounded-lg text-xs text-white focus:outline-none focus:border-[#00f0ff]"
                   />
                 </div>
 
                 <button
                   onClick={handleCopyTextHeader}
-                  className="px-3 py-1.5 bg-[#162d4c] hover:bg-[#2a9bb0] hover:text-[#0a1628] text-xs font-semibold text-[#2a9bb0] rounded-lg transition-colors flex items-center gap-1.5"
+                  className="px-3 py-2 bg-[#1a3d54] hover:bg-[#2a9bb0]/30 text-xs font-bold text-[#00f0ff] rounded-lg border border-[#2a9bb0]/40 flex items-center gap-1.5 transition-colors"
                 >
-                  {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copied ? 'Copied to Clipboard' : 'Copy 3200B Header'}
+                  {copied ? <Check className="w-4 h-4 text-[#2ecc71]" /> : <Copy className="w-4 h-4" />}
+                  <span>{copied ? 'Copied' : 'Copy Header'}</span>
                 </button>
               </div>
 
-              <div className="bg-[#050c17] p-4 rounded-xl border border-[#2a9bb0]/30 font-mono text-[11px] text-[#2ecc71] h-[340px] overflow-y-auto leading-relaxed whitespace-pre selection:bg-[#2a9bb0]/30">
-                {filteredTextLines.length > 0 ? (
-                  filteredTextLines.join('\n')
-                ) : (
-                  <div className="text-[#8aafc0] text-center py-8">No matching header lines found.</div>
-                )}
+              <div className="bg-[#050c17] p-4 rounded-xl border border-[#2a9bb0]/30 font-mono text-[11px] text-[#2ecc71] h-80 overflow-y-auto leading-relaxed select-text space-y-0.5">
+                {insp.textHeader.split('\n').map((line, idx) => {
+                  const isMatch = textSearch && line.toLowerCase().includes(textSearch.toLowerCase());
+                  return (
+                    <div
+                      key={idx}
+                      className={`whitespace-pre px-1 rounded ${
+                        isMatch ? 'bg-[#f0a500]/30 text-white font-bold' : ''
+                      }`}
+                    >
+                      {line}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}
 
-          {insp && activeTab === 'binary' && (
-            <div className="space-y-3">
-              <div className="bg-[#071322] border border-[#2a9bb0]/20 rounded-xl p-4 overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="border-b border-[#2a9bb0]/30 text-[#8aafc0]">
-                      <th className="py-2 px-3">Field Offset</th>
-                      <th className="py-2 px-3">Parameter Name</th>
-                      <th className="py-2 px-3">Value</th>
-                      <th className="py-2 px-3">Description</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#2a9bb0]/10 font-mono text-[11px]">
-                    <tr>
-                      <td className="py-2 px-3 text-[#8aafc0]">Bytes 3201-3204</td>
-                      <td className="py-2 px-3 text-[#e8f4f8]">Job ID Number</td>
-                      <td className="py-2 px-3 text-[#00f0ff] font-bold">{insp.binaryHeader.jobId}</td>
-                      <td className="py-2 px-3 text-[#8aafc0]">Acquisition job identifier</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 px-3 text-[#8aafc0]">Bytes 3205-3208</td>
-                      <td className="py-2 px-3 text-[#e8f4f8]">Line Number</td>
-                      <td className="py-2 px-3 text-[#00f0ff] font-bold">{insp.binaryHeader.lineNum}</td>
-                      <td className="py-2 px-3 text-[#8aafc0]">Seismic line identifier</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 px-3 text-[#8aafc0]">Bytes 3217-3218</td>
-                      <td className="py-2 px-3 text-[#e8f4f8]">Sample Interval (dt)</td>
-                      <td className="py-2 px-3 text-[#f0a500] font-bold">{insp.binaryHeader.sampleIntervalUs} µs ({insp.sampleRate} ms)</td>
-                      <td className="py-2 px-3 text-[#8aafc0]">Microseconds per sample interval</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 px-3 text-[#8aafc0]">Bytes 3221-3222</td>
-                      <td className="py-2 px-3 text-[#e8f4f8]">Samples / Trace</td>
-                      <td className="py-2 px-3 text-[#e8f4f8] font-bold">{insp.binaryHeader.nSamples}</td>
-                      <td className="py-2 px-3 text-[#8aafc0]">Number of samples per data trace</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 px-3 text-[#8aafc0]">Bytes 3225-3226</td>
-                      <td className="py-2 px-3 text-[#e8f4f8]">Data Sample Format</td>
-                      <td className="py-2 px-3 text-[#2ecc71] font-bold">{insp.binaryHeader.formatCode} ({insp.binaryHeader.formatDescription})</td>
-                      <td className="py-2 px-3 text-[#8aafc0]">1=IBM Float, 5=IEEE Float, 3=Int16</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 px-3 text-[#8aafc0]">Bytes 3227-3228</td>
-                      <td className="py-2 px-3 text-[#e8f4f8]">CDP Fold</td>
-                      <td className="py-2 px-3 text-[#00f0ff]">{insp.binaryHeader.cdpFold}</td>
-                      <td className="py-2 px-3 text-[#8aafc0]">Expected nominal CMP coverage fold</td>
-                    </tr>
-                    <tr>
-                      <td className="py-2 px-3 text-[#8aafc0]">Bytes 3501-3502</td>
-                      <td className="py-2 px-3 text-[#e8f4f8]">SEG-Y Revision</td>
-                      <td className="py-2 px-3 text-[#e8f4f8]">{insp.binaryHeader.segRev > 0 ? `Rev ${insp.binaryHeader.segRev}` : 'Rev 0 (Standard)'}</td>
-                      <td className="py-2 px-3 text-[#8aafc0]">SEG-Y format revision standard</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+          {/* TAB 3: 400-BYTE BINARY HEADER */}
+          {activeTab === 'binary' && insp && (
+            <div className="bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl overflow-hidden shadow-lg">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="bg-[#071322] text-[#8aafc0] text-[10px] uppercase border-b border-[#2a9bb0]/20">
+                  <tr>
+                    <th className="p-3">Field Description</th>
+                    <th className="p-3">Byte Offset</th>
+                    <th className="p-3">Value</th>
+                    <th className="p-3">Interpretation</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#2a9bb0]/10 text-[#e8f4f8]">
+                  <tr>
+                    <td className="p-3 font-semibold">Sample Interval (dt)</td>
+                    <td className="p-3 text-[#8aafc0]">Bytes 17-18</td>
+                    <td className="p-3 text-[#00f0ff] font-bold">{insp.binaryHeader.sampleIntervalUs} µs</td>
+                    <td className="p-3 text-[#8aafc0]">{insp.sampleRate} ms sampling</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold">Samples Per Trace (ns)</td>
+                    <td className="p-3 text-[#8aafc0]">Bytes 21-22</td>
+                    <td className="p-3 text-[#2ecc71] font-bold">{insp.binaryHeader.nSamples}</td>
+                    <td className="p-3 text-[#8aafc0]">{insp.nSamples} time/depth points</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold">Data Sample Format Code</td>
+                    <td className="p-3 text-[#8aafc0]">Bytes 25-26</td>
+                    <td className="p-3 text-[#f0a500] font-bold">{insp.binaryHeader.formatCode}</td>
+                    <td className="p-3 text-[#8aafc0]">{insp.binaryHeader.formatDescription}</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold">CDP Fold Coverage</td>
+                    <td className="p-3 text-[#8aafc0]">Bytes 27-28</td>
+                    <td className="p-3 font-bold">{insp.binaryHeader.cdpFold}</td>
+                    <td className="p-3 text-[#8aafc0]">Ensemble fold</td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold">Trace Sorting Code</td>
+                    <td className="p-3 text-[#8aafc0]">Bytes 29-30</td>
+                    <td className="p-3 font-bold">{insp.binaryHeader.traceSorting}</td>
+                    <td className="p-3 text-[#8aafc0]">
+                      {insp.binaryHeader.traceSorting === 2 ? 'CDP Ensemble' : 'As Recorded'}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="p-3 font-semibold">SEG-Y Format Revision</td>
+                    <td className="p-3 text-[#8aafc0]">Bytes 301-302</td>
+                    <td className="p-3 font-bold">{insp.binaryHeader.segRev}</td>
+                    <td className="p-3 text-[#8aafc0]">
+                      {insp.binaryHeader.segRev === 256 ? 'SEG-Y rev 1.0' : 'SEG-Y rev 0'}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           )}
 
-          {insp && activeTab === 'traces' && (
-            <div className="space-y-3">
-              <div className="text-xs text-[#8aafc0]">
-                Live inspection of the first {insp.sampleTraceHeaders.length} trace headers:
+          {/* TAB 4: SAMPLE TRACE HEADERS */}
+          {activeTab === 'traces' && insp && (
+            <div className="bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl overflow-hidden shadow-lg">
+              <div className="p-3 bg-[#071322] border-b border-[#2a9bb0]/20 flex items-center justify-between text-xs">
+                <span className="font-bold text-[#8aafc0] uppercase tracking-wider">
+                  First {insp.sampleTraceHeaders.length} Trace Headers (240 Bytes Each)
+                </span>
+                <span className="text-[10px] text-[#00f0ff] font-mono">
+                  Total Traces: {insp.totalTraces.toLocaleString()}
+                </span>
               </div>
-              <div className="bg-[#071322] border border-[#2a9bb0]/20 rounded-xl p-2 overflow-x-auto max-h-[340px]">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead>
-                    <tr className="border-b border-[#2a9bb0]/30 text-[#8aafc0] text-[11px]">
-                      <th className="py-1.5 px-2">Trace#</th>
-                      <th className="py-1.5 px-2">CDP</th>
-                      <th className="py-1.5 px-2">SP</th>
-                      <th className="py-1.5 px-2">FFID</th>
-                      <th className="py-1.5 px-2 text-[#00f0ff]">Inline (189)</th>
-                      <th className="py-1.5 px-2 text-[#00f0ff]">Xline (193)</th>
-                      <th className="py-1.5 px-2">Source X</th>
-                      <th className="py-1.5 px-2">Source Y</th>
-                      <th className="py-1.5 px-2">Scalar</th>
+              <div className="overflow-x-auto max-h-72">
+                <table className="w-full text-left text-[11px] font-mono">
+                  <thead className="bg-[#0a1628] text-[#8aafc0] text-[10px] uppercase sticky top-0">
+                    <tr>
+                      <th className="p-2.5">Tr#</th>
+                      <th className="p-2.5">CDP</th>
+                      <th className="p-2.5">SP</th>
+                      <th className="p-2.5">Inline</th>
+                      <th className="p-2.5">X-Line</th>
+                      <th className="p-2.5">CDP X</th>
+                      <th className="p-2.5">CDP Y</th>
+                      <th className="p-2.5">Offset</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[#2a9bb0]/10 text-[11px]">
+                  <tbody className="divide-y divide-[#2a9bb0]/10 text-[#e8f4f8]">
                     {insp.sampleTraceHeaders.map((th, i) => (
-                      <tr key={i} className="hover:bg-[#162d4c]/50">
-                        <td className="py-1.5 px-2 text-[#8aafc0]">{th.traceNumber}</td>
-                        <td className="py-1.5 px-2 text-[#e8f4f8]">{th.cdp}</td>
-                        <td className="py-1.5 px-2 text-[#e8f4f8]">{th.shotPoint}</td>
-                        <td className="py-1.5 px-2 text-[#8aafc0]">{th.ffid}</td>
-                        <td className="py-1.5 px-2 text-[#00f0ff] font-bold">{th.inline}</td>
-                        <td className="py-1.5 px-2 text-[#00f0ff] font-bold">{th.crossline}</td>
-                        <td className="py-1.5 px-2 text-[#8aafc0]">{Math.round(th.sourceX)}</td>
-                        <td className="py-1.5 px-2 text-[#8aafc0]">{Math.round(th.sourceY)}</td>
-                        <td className="py-1.5 px-2 text-[#8aafc0]">{th.scalar}</td>
+                      <tr key={i} className="hover:bg-white/5">
+                        <td className="p-2.5 font-bold text-[#00f0ff]">{th.traceNumber}</td>
+                        <td className="p-2.5 text-[#2ecc71]">{th.cdp}</td>
+                        <td className="p-2.5">{th.shotPoint || '-'}</td>
+                        <td className="p-2.5">{th.inline || '-'}</td>
+                        <td className="p-2.5">{th.crossline || '-'}</td>
+                        <td className="p-2.5 text-[#8aafc0]">{Math.round(th.cdpX)}</td>
+                        <td className="p-2.5 text-[#8aafc0]">{Math.round(th.cdpY)}</td>
+                        <td className="p-2.5">{th.offset}m</td>
                       </tr>
                     ))}
                   </tbody>
@@ -574,15 +986,21 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
             </div>
           )}
 
-          {insp && activeTab === 'mapping' && (
+          {/* TAB 5: HEADER BYTE OVERRIDES & CUSTOM MAPPINGS */}
+          {activeTab === 'mapping' && (
             <div className="space-y-4">
-              <div className="p-3 bg-[#071322] border border-[#2a9bb0]/20 rounded-xl text-xs text-[#8aafc0]">
-                Customize trace header byte locations to match proprietary acquisition geometry or custom non-standard SEG-Y exports.
+              <div className="p-4 bg-[#0f2139] rounded-xl border border-[#2a9bb0]/30 space-y-2">
+                <h3 className="text-xs font-bold uppercase tracking-wider text-[#00f0ff] flex items-center gap-2">
+                  <Sliders className="w-4 h-4" /> Header Byte Location Customizer
+                </h3>
+                <p className="text-xs text-[#8aafc0]">
+                  Override byte positions for non-standard SEG-Y formats or custom navigation headers.
+                </p>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div className="bg-[#071322] p-4 rounded-xl border border-[#2a9bb0]/20 space-y-3">
-                  <h4 className="text-xs font-bold text-[#00f0ff] uppercase tracking-wider">3D Grid Byte Offsets</h4>
+                  <h4 className="text-xs font-bold text-[#00f0ff] uppercase tracking-wider">3D Volume Header Offsets</h4>
                   <div>
                     <label className="text-[11px] text-[#8aafc0] block mb-1">Inline Byte Offset</label>
                     <input
@@ -657,7 +1075,7 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
                       onChange={(e) => setMaxTraces(Math.max(100, parseInt(e.target.value, 10) || 1000))}
                       className="w-full px-3 py-1.5 bg-[#0b1b30] border border-[#2a9bb0]/30 rounded text-xs font-mono text-white focus:outline-none focus:border-[#f0a500]"
                     />
-                    <span className="text-[10px] text-[#8aafc0]">Trace memory limit (default 5,000)</span>
+                    <span className="text-[10px] text-[#8aafc0]">Trace memory limit</span>
                   </div>
                 </div>
               </div>
@@ -668,9 +1086,15 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
         {/* Modal Footer */}
         <div className="px-6 py-4 bg-[#0f2139] border-t border-[#2a9bb0]/30 flex items-center justify-between">
           <div className="text-xs text-[#8aafc0] flex items-center gap-2">
-            <span>Selected Mode:</span>
+            <span>Import Target:</span>
             <span className="font-bold text-white font-mono bg-[#071322] px-2.5 py-1 rounded border border-[#2a9bb0]/30">
-              {(datasetMode === '2d' || (datasetMode === 'auto' && insp?.detectedType === '2d')) ? '📈 2D Seismic Line' : '🧊 3D Seismic Cube'}
+              {isMultiFile && constructMode === '3d_cube'
+                ? '🧊 Synthesize 3D Seismic Cube (IDW Grid)'
+                : isMultiFile && constructMode === '2d_fence'
+                ? '📈 2D Multi-Line Fence Survey'
+                : (datasetMode === '2d' || (datasetMode === 'auto' && insp?.detectedType === '2d'))
+                ? '📈 2D Seismic Line'
+                : '🧊 3D Seismic Cube'}
             </span>
           </div>
 
@@ -684,10 +1108,13 @@ export const SegyImportModal: React.FC<SegyImportModalProps> = ({
 
             <button
               onClick={handleExecuteImport}
-              disabled={!insp}
-              className="px-6 py-2 bg-[#2ecc71] hover:bg-[#27ae60] text-[#0a1628] font-bold text-xs rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50"
+              disabled={!insp && !multiLineSurveyData?.survey}
+              className="px-6 py-2 bg-[#2ecc71] hover:bg-[#27ae60] text-[#0a1628] font-bold text-xs rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50 cursor-pointer"
             >
-              <CheckCircle2 className="w-4 h-4" /> Load Seismic Dataset
+              <CheckCircle2 className="w-4 h-4" />
+              {isMultiFile && constructMode === '3d_cube'
+                ? `Construct ${gridNy}×${gridNx} 3D Volume`
+                : 'Load Seismic Dataset'}
             </button>
           </div>
         </div>

@@ -6,6 +6,9 @@ import {
   SeismicBinaryHeader,
   TraceHeader,
   SegyImportOptions,
+  MultiLine2DSurvey,
+  Seismic2DLineInfo,
+  LineIntersection,
 } from '../types';
 
 /**
@@ -170,20 +173,52 @@ export function parseTraceHeader(
   const ffid = getI32(options?.ffidByte || 9);
   const sp = getI32(options?.spByte || 17);
   const cdp = getI32(options?.cdpByte || 21);
-  const scalar = getI16(options?.scalarByte || 71) || 1;
-  const scaleMult = scalar < 0 ? 1 / Math.abs(scalar) : scalar;
 
-  const sourceX = getI32(options?.sourceXByte || 73) * scaleMult;
-  const sourceY = getI32(options?.sourceYByte || 77) * scaleMult;
-  const groupX = getI32(81) * scaleMult;
-  const groupY = getI32(85) * scaleMult;
-  const cdpX = getI32(options?.cdpXByte || 181) * scaleMult;
-  const cdpY = getI32(options?.cdpYByte || 185) * scaleMult;
-  const elevation = getI32(41) * scaleMult;
+  // Coordinate Scalar handling:
+  // In standard SEG-Y, byte 71-72 (offset 70 in 0-indexed view) is the coordinate scalar:
+  // If scalar < 0: divide by abs(scalar) (multiplier is 1 / |scalar|)
+  // If scalar > 0: multiply by scalar (multiplier is scalar)
+  // If scalar === 0: multiplier is 1.0
+  const rawScalar = getI16(options?.scalarByte || 71);
+  const scalar = rawScalar !== 0 ? rawScalar : 1;
+  const scaleMult = scalar < 0 ? 1.0 / Math.abs(scalar) : scalar > 0 ? scalar : 1.0;
 
+  // Elevation scalar at bytes 69-70
+  const rawElevScalar = getI16(69);
+  const elevScalar = rawElevScalar !== 0 ? rawElevScalar : 1;
+  const elevScaleMult = elevScalar < 0 ? 1.0 / Math.abs(elevScalar) : elevScalar > 0 ? elevScalar : 1.0;
+
+  // Standard SEG-Y Byte Offsets:
+  // Source X: bytes 73-76 (offset 72)
+  // Source Y: bytes 77-80 (offset 76)
+  // Group/Receiver X: bytes 81-84 (offset 80)
+  // Group/Receiver Y: bytes 85-88 (offset 84)
+  // CDP X: bytes 181-184 (offset 180)
+  // CDP Y: bytes 185-188 (offset 184)
+  const rawSourceX = getI32(options?.sourceXByte || 73);
+  const rawSourceY = getI32(options?.sourceYByte || 77);
+  const rawGroupX = getI32(81);
+  const rawGroupY = getI32(85);
+  const rawCdpX = getI32(options?.cdpXByte || 181);
+  const rawCdpY = getI32(options?.cdpYByte || 185);
+  const rawElev = getI32(41);
+
+  const sourceX = rawSourceX !== 0 ? rawSourceX * scaleMult : 0;
+  const sourceY = rawSourceY !== 0 ? rawSourceY * scaleMult : 0;
+  const groupX = rawGroupX !== 0 ? rawGroupX * scaleMult : 0;
+  const groupY = rawGroupY !== 0 ? rawGroupY * scaleMult : 0;
+
+  // Compute CMP midpoint if both source and receiver coordinates exist
+  const midX = (sourceX !== 0 && groupX !== 0) ? (sourceX + groupX) / 2 : (sourceX !== 0 ? sourceX : groupX);
+  const midY = (sourceY !== 0 && groupY !== 0) ? (sourceY + groupY) / 2 : (sourceY !== 0 ? sourceY : groupY);
+
+  // Coordinate resolution: extract all candidate coordinate channels
+  const cdpX = rawCdpX !== 0 ? rawCdpX * scaleMult : 0;
+  const cdpY = rawCdpY !== 0 ? rawCdpY * scaleMult : 0;
+
+  const elevation = rawElev * elevScaleMult;
   const nSamples = getI16(115);
   const sampleIntervalUs = getI16(117);
-
   const inline = getI32(options?.inlineByte || 189);
   const crossline = getI32(options?.crosslineByte || 193);
 
@@ -191,15 +226,15 @@ export function parseTraceHeader(
     traceNumber: traceSeqFile || traceSeqLine || 1,
     inline,
     crossline,
-    cdp: cdp || traceSeqFile || 1,
-    shotPoint: sp,
+    cdp: cdp || traceSeqFile || traceSeqLine || 1,
+    shotPoint: sp || cdp || traceSeqFile || 1,
     ffid,
     sourceX,
     sourceY,
     groupX,
     groupY,
-    cdpX: cdpX || sourceX,
-    cdpY: cdpY || sourceY,
+    cdpX: cdpX !== 0 ? cdpX : (midX !== 0 ? midX : sourceX),
+    cdpY: cdpY !== 0 ? cdpY : (midY !== 0 ? midY : sourceY),
     elevation,
     scalar,
     nSamples,
@@ -365,8 +400,14 @@ export function parseSegyBuffer(
     const data = new Float32Array(nTraces * nSamples);
     const cdpNumbers: number[] = [];
     const shotPoints: number[] = [];
-    const xCoords: number[] = [];
-    const yCoords: number[] = [];
+    const cdpXCoords: number[] = [];
+    const cdpYCoords: number[] = [];
+    const sourceXCoords: number[] = [];
+    const sourceYCoords: number[] = [];
+    const groupXCoords: number[] = [];
+    const groupYCoords: number[] = [];
+    const midXCoords: number[] = [];
+    const midYCoords: number[] = [];
 
     for (let t = 0; t < nTraces; t++) {
       const traceStart = 3600 + t * traceTotalSize;
@@ -375,13 +416,110 @@ export function parseSegyBuffer(
       const th = parseTraceHeader(view, traceStart, isLittleEndian, options);
       cdpNumbers.push(th.cdp || (t + 1));
       shotPoints.push(th.shotPoint || (t + 1));
-      xCoords.push(th.cdpX);
-      yCoords.push(th.cdpY);
+      cdpXCoords.push(th.cdpX);
+      cdpYCoords.push(th.cdpY);
+      sourceXCoords.push(th.sourceX);
+      sourceYCoords.push(th.sourceY);
+      groupXCoords.push(th.groupX);
+      groupYCoords.push(th.groupY);
+      const mX = (th.sourceX !== 0 && th.groupX !== 0) ? (th.sourceX + th.groupX) / 2 : (th.sourceX !== 0 ? th.sourceX : th.groupX);
+      const mY = (th.sourceY !== 0 && th.groupY !== 0) ? (th.sourceY + th.groupY) / 2 : (th.sourceY !== 0 ? th.sourceY : th.groupY);
+      midXCoords.push(mX);
+      midYCoords.push(mY);
 
       for (let s = 0; s < nSamples; s++) {
         const sampleOffset = dataStart + s * bytesPerSample;
         const val = readSample(sampleOffset);
         data[t * nSamples + s] = isNaN(val) ? 0 : val;
+      }
+    }
+
+    // Evaluate best coordinate channel for this line:
+    // Prefer the channel that has non-zero valid numbers and distinct span across traces
+    const channels = [
+      { name: 'CDP', x: cdpXCoords, y: cdpYCoords },
+      { name: 'Source', x: sourceXCoords, y: sourceYCoords },
+      { name: 'Group', x: groupXCoords, y: groupYCoords },
+      { name: 'Midpoint', x: midXCoords, y: midYCoords },
+    ];
+
+    let chosenChannel = channels[0];
+    let bestScore = -1;
+
+    for (const ch of channels) {
+      let validCount = 0;
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (let t = 0; t < nTraces; t++) {
+        const x = ch.x[t];
+        const y = ch.y[t];
+        if (isFinite(x) && isFinite(y) && (Math.abs(x) > 0.001 || Math.abs(y) > 0.001)) {
+          validCount++;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+      const span = (maxX > minX ? maxX - minX : 0) + (maxY > minY ? maxY - minY : 0);
+      const score = validCount * (span > 0 ? 1000 : 1) + span;
+      if (validCount >= 2 && score > bestScore) {
+        bestScore = score;
+        chosenChannel = ch;
+      }
+    }
+
+    const xCoords = [...chosenChannel.x];
+    const yCoords = [...chosenChannel.y];
+
+    // Clean & validate 2D world coordinates from headers:
+    // Identify valid non-zero finite coordinates and linearly interpolate any dead/missing headers
+    const validIndices: number[] = [];
+    for (let t = 0; t < nTraces; t++) {
+      const x = xCoords[t];
+      const y = yCoords[t];
+      if (isFinite(x) && isFinite(y) && (Math.abs(x) > 0.001 || Math.abs(y) > 0.001)) {
+        validIndices.push(t);
+      }
+    }
+
+    if (validIndices.length >= 2) {
+      // Interpolate start if first trace had 0 coords
+      if (validIndices[0] > 0) {
+        const firstValid = validIndices[0];
+        const nextValid = validIndices[1];
+        const dx = (xCoords[nextValid] - xCoords[firstValid]) / Math.max(1, nextValid - firstValid);
+        const dy = (yCoords[nextValid] - yCoords[firstValid]) / Math.max(1, nextValid - firstValid);
+        for (let t = 0; t < firstValid; t++) {
+          xCoords[t] = xCoords[firstValid] - (firstValid - t) * dx;
+          yCoords[t] = yCoords[firstValid] - (firstValid - t) * dy;
+        }
+      }
+      // Interpolate gaps between valid anchors
+      for (let k = 0; k < validIndices.length - 1; k++) {
+        const iA = validIndices[k];
+        const iB = validIndices[k + 1];
+        if (iB - iA > 1) {
+          const xA = xCoords[iA];
+          const yA = yCoords[iA];
+          const xB = xCoords[iB];
+          const yB = yCoords[iB];
+          for (let t = iA + 1; t < iB; t++) {
+            const frac = (t - iA) / (iB - iA);
+            xCoords[t] = xA + frac * (xB - xA);
+            yCoords[t] = yA + frac * (yB - yA);
+          }
+        }
+      }
+      // Extrapolate end if last trace had 0 coords
+      const lastValid = validIndices[validIndices.length - 1];
+      if (lastValid < nTraces - 1) {
+        const prevValid = validIndices[Math.max(0, validIndices.length - 2)];
+        const dx = (xCoords[lastValid] - xCoords[prevValid]) / Math.max(1, lastValid - prevValid);
+        const dy = (yCoords[lastValid] - yCoords[prevValid]) / Math.max(1, lastValid - prevValid);
+        for (let t = lastValid + 1; t < nTraces; t++) {
+          xCoords[t] = xCoords[lastValid] + (t - lastValid) * dx;
+          yCoords[t] = yCoords[lastValid] + (t - lastValid) * dy;
+        }
       }
     }
 
@@ -1138,3 +1276,634 @@ export const GEOLOGICAL_PRESETS_2D = [
 ];
 
 export const GEOLOGICAL_PRESETS = [...GEOLOGICAL_PRESETS_3D, ...GEOLOGICAL_PRESETS_2D];
+
+/**
+ * Standard distinct color palette for 2D seismic lines
+ */
+export const LINE_PALETTE = [
+  '#00f0ff', // Cyan
+  '#f0a500', // Amber/Gold
+  '#2ecc71', // Green
+  '#e74c3c', // Red
+  '#9b59b6', // Purple
+  '#3498db', // Blue
+  '#e67e22', // Orange
+  '#1abc9c', // Teal
+];
+
+/**
+ * Find 2D line segment intersection point
+ */
+export function findLineIntersection(
+  p1: { x: number; y: number },
+  p2: { x: number; y: number },
+  p3: { x: number; y: number },
+  p4: { x: number; y: number }
+): { x: number; y: number; uA: number; uB: number } | null {
+  const denom = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
+  if (Math.abs(denom) < 1e-9) return null;
+
+  const uA = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / denom;
+  const uB = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / denom;
+
+  if (uA >= 0 && uA <= 1 && uB >= 0 && uB <= 1) {
+    return {
+      x: p1.x + uA * (p2.x - p1.x),
+      y: p1.y + uA * (p2.y - p1.y),
+      uA,
+      uB,
+    };
+  }
+  return null;
+}
+
+/**
+ * Explicit synthetic 3D trajectories for the 11 survey lines.
+ * Guarantees wide 400 to 800+ unit (4000m+) horizontal fence trajectories in the 3D space.
+ */
+export const SYNTHETIC_3D_LINE_TRAJECTORIES = [
+  // 7 Dip profiles (parallel West-East transects across survey structure)
+  { startNormX: 0.05, startNormY: 0.10, endNormX: 0.95, endNormY: 0.12, startX: 500, startY: 1000, endX: 9500, endY: 1200, name: 'SD-02-RESI', color: '#00f0ff', az: 87 },
+  { startNormX: 0.05, startNormY: 0.22, endNormX: 0.95, endNormY: 0.25, startX: 500, startY: 2200, endX: 9500, endY: 2500, name: 'SD-04-RESI', color: '#00e5ff', az: 87 },
+  { startNormX: 0.05, startNormY: 0.35, endNormX: 0.95, endNormY: 0.38, startX: 500, startY: 3500, endX: 9500, endY: 3800, name: 'SD-06-RESI', color: '#00d8f6', az: 87 },
+  { startNormX: 0.05, startNormY: 0.50, endNormX: 0.95, endNormY: 0.52, startX: 500, startY: 5000, endX: 9500, endY: 5200, name: 'SD-08-RESI', color: '#00cbe7', az: 87 },
+  { startNormX: 0.05, startNormY: 0.65, endNormX: 0.95, endNormY: 0.68, startX: 500, startY: 6500, endX: 9500, endY: 6800, name: 'SD-10-RESI', color: '#00bed8', az: 87 },
+  { startNormX: 0.05, startNormY: 0.78, endNormX: 0.95, endNormY: 0.80, startX: 500, startY: 7800, endX: 9500, endY: 8000, name: 'SD-12-RESI', color: '#00b0c9', az: 87 },
+  { startNormX: 0.05, startNormY: 0.90, endNormX: 0.95, endNormY: 0.92, startX: 500, startY: 9000, endX: 9500, endY: 9200, name: 'SD-14-RESI', color: '#00a3ba', az: 87 },
+  // 4 Strike tie-lines (orthogonal South-North profiles intersecting all dip lines)
+  { startNormX: 0.20, startNormY: 0.05, endNormX: 0.22, endNormY: 0.95, startX: 2000, startY: 500, endX: 2200, endY: 9500, name: 'SD-07-RESI', color: '#00f0ff', az: 178 },
+  { startNormX: 0.40, startNormY: 0.05, endNormX: 0.42, endNormY: 0.95, startX: 4000, startY: 500, endX: 4200, endY: 9500, name: 'SD-05-RESI', color: '#00e5ff', az: 178 },
+  { startNormX: 0.60, startNormY: 0.05, endNormX: 0.62, endNormY: 0.95, startX: 6000, startY: 500, endX: 6200, endY: 9500, name: 'SD-03-RESI', color: '#00d8f6', az: 178 },
+  { startNormX: 0.80, startNormY: 0.05, endNormX: 0.82, endNormY: 0.95, startX: 8000, startY: 500, endX: 8200, endY: 9500, name: 'SD-01-RESI', color: '#00cbe7', az: 178 },
+];
+
+/**
+ * Construct a MultiLine2DSurvey structure from a collection of 2D SeismicDatasets
+ */
+export function buildMultiLineSurvey(
+  datasets: SeismicDataset[],
+  surveyName: string = 'Multi-Line 2D Seismic Survey'
+): MultiLine2DSurvey {
+  if (datasets.length === 0) {
+    throw new Error('At least one 2D seismic line is required.');
+  }
+
+  // Ensure uniform sample rate and sample length
+  const sampleRate = datasets[0].sampleRate;
+  const nSamples = Math.min(...datasets.map((d) => d.nSamples));
+
+  const lines: Seismic2DLineInfo[] = [];
+
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+
+  datasets.forEach((ds, idx) => {
+    const lineId = `line_${idx + 1}`;
+    const traj = SYNTHETIC_3D_LINE_TRAJECTORIES[idx % SYNTHETIC_3D_LINE_TRAJECTORIES.length];
+    const name = ds.lineName || ds.name || traj.name || `2D Line ${idx + 1}`;
+    const color = traj.color || LINE_PALETTE[idx % LINE_PALETTE.length];
+    const nTraces = ds.nTraces;
+
+    // Ensure traces within each line are strictly ordered by CMP / trace sequence
+    // This prevents tangled/scribbled shapes when building line geometry
+    if (ds.xCoords && ds.yCoords && ds.xCoords.length === nTraces && ds.yCoords.length === nTraces) {
+      let needsSort = false;
+      if (ds.cdpNumbers && ds.cdpNumbers.length === nTraces) {
+        for (let i = 0; i < nTraces - 1; i++) {
+          if (ds.cdpNumbers[i] > ds.cdpNumbers[i + 1]) {
+            needsSort = true;
+            break;
+          }
+        }
+      }
+
+      if (needsSort && ds.cdpNumbers) {
+        const order = Array.from({ length: nTraces }, (_, i) => i);
+        order.sort((a, b) => (ds.cdpNumbers![a] || a) - (ds.cdpNumbers![b] || b));
+
+        const sortedX = new Array(nTraces);
+        const sortedY = new Array(nTraces);
+        const sortedCdp = new Array(nTraces);
+        const sortedSp = ds.shotPoints ? new Array(nTraces) : undefined;
+        const sortedData = new Float32Array(nTraces * ds.nSamples);
+
+        for (let i = 0; i < nTraces; i++) {
+          const oldIdx = order[i];
+          sortedX[i] = ds.xCoords[oldIdx];
+          sortedY[i] = ds.yCoords[oldIdx];
+          sortedCdp[i] = ds.cdpNumbers[oldIdx];
+          if (sortedSp && ds.shotPoints) sortedSp[i] = ds.shotPoints[oldIdx];
+          sortedData.set(
+            ds.data.subarray(oldIdx * ds.nSamples, (oldIdx + 1) * ds.nSamples),
+            i * ds.nSamples
+          );
+        }
+
+        ds.xCoords = sortedX;
+        ds.yCoords = sortedY;
+        ds.cdpNumbers = sortedCdp;
+        if (sortedSp) ds.shotPoints = sortedSp;
+        ds.data = sortedData;
+      }
+    }
+
+    // Check if the dataset contains valid, non-zero world coordinates from SEG-Y trace headers
+    const validCoordsList: { t: number; x: number; y: number }[] = [];
+    if (ds.xCoords && ds.yCoords && ds.xCoords.length >= 2 && ds.yCoords.length >= 2) {
+      for (let t = 0; t < nTraces; t++) {
+        const x = ds.xCoords[t];
+        const y = ds.yCoords[t];
+        if (
+          typeof x === 'number' &&
+          typeof y === 'number' &&
+          isFinite(x) &&
+          isFinite(y) &&
+          (Math.abs(x) > 0.001 || Math.abs(y) > 0.001)
+        ) {
+          validCoordsList.push({ t, x, y });
+        }
+      }
+    }
+
+    const minXVal = validCoordsList.length > 0 ? Math.min(...validCoordsList.map((c) => c.x)) : 0;
+    const maxXVal = validCoordsList.length > 0 ? Math.max(...validCoordsList.map((c) => c.x)) : 0;
+    const minYVal = validCoordsList.length > 0 ? Math.min(...validCoordsList.map((c) => c.y)) : 0;
+    const maxYVal = validCoordsList.length > 0 ? Math.max(...validCoordsList.map((c) => c.y)) : 0;
+
+    const hasValidWorldCoords =
+      validCoordsList.length >= 2 &&
+      (maxXVal - minXVal > 0.01 || maxYVal - minYVal > 0.01);
+
+    let startX: number;
+    let startY: number;
+    let endX: number;
+    let endY: number;
+
+    if (hasValidWorldCoords) {
+      // Robust least-squares linear regression: fit X(t) = a_x + b_x * t and Y(t) = a_y + b_y * t
+      let sumT = 0, sumT2 = 0, sumX = 0, sumY = 0, sumTX = 0, sumTY = 0;
+      const count = validCoordsList.length;
+      for (const item of validCoordsList) {
+        sumT += item.t;
+        sumT2 += item.t * item.t;
+        sumX += item.x;
+        sumY += item.y;
+        sumTX += item.t * item.x;
+        sumTY += item.t * item.y;
+      }
+      const meanT = sumT / count;
+      const meanX = sumX / count;
+      const meanY = sumY / count;
+      const varT = sumT2 - count * meanT * meanT;
+
+      if (Math.abs(varT) > 1e-6) {
+        const slopeX = (sumTX - count * meanT * meanX) / varT;
+        const slopeY = (sumTY - count * meanT * meanY) / varT;
+        const interceptX = meanX - slopeX * meanT;
+        const interceptY = meanY - slopeY * meanT;
+
+        startX = interceptX;
+        startY = interceptY;
+        endX = interceptX + slopeX * (nTraces - 1);
+        endY = interceptY + slopeY * (nTraces - 1);
+      } else {
+        startX = validCoordsList[0].x;
+        startY = validCoordsList[0].y;
+        endX = validCoordsList[count - 1].x;
+        endY = validCoordsList[count - 1].y;
+      }
+
+      // Smooth projected coordinates for fence ribbon mesh
+      const projX = new Array<number>(nTraces);
+      const projY = new Array<number>(nTraces);
+      for (let t = 0; t < nTraces; t++) {
+        const frac = t / Math.max(1, nTraces - 1);
+        projX[t] = startX + frac * (endX - startX);
+        projY[t] = startY + frac * (endY - startY);
+      }
+      ds.xCoords = projX;
+      ds.yCoords = projY;
+    } else {
+      // Fallback when dataset has no SEG-Y header coordinates:
+      // Assign distinct spatial trajectories from SYNTHETIC_3D_LINE_TRAJECTORIES
+      startX = traj.startX;
+      startY = traj.startY;
+      endX = traj.endX;
+      endY = traj.endY;
+
+      ds.xCoords = Array.from(
+        { length: nTraces },
+        (_, t) => startX + (t / Math.max(1, nTraces - 1)) * (endX - startX)
+      );
+      ds.yCoords = Array.from(
+        { length: nTraces },
+        (_, t) => startY + (t / Math.max(1, nTraces - 1)) * (endY - startY)
+      );
+    }
+
+    const dx = endX - startX;
+    const dy = endY - startY;
+    const lengthM = Math.sqrt(dx * dx + dy * dy);
+    let azimuthDeg = (Math.atan2(dx, dy) * 180) / Math.PI;
+    if (azimuthDeg < 0) azimuthDeg += 360;
+
+    // Log line coordinates for verification
+    console.log(
+      `[MultiLineSurvey] Line ${idx + 1} "${name}": start=(${startX.toFixed(1)}, ${startY.toFixed(1)}) -> end=(${endX.toFixed(1)}, ${endY.toFixed(1)}), length=${Math.round(lengthM)}m, azimuth=${azimuthDeg.toFixed(1)}°`
+    );
+
+    lines.push({
+      id: lineId,
+      name,
+      dataset: ds,
+      startX,
+      startY,
+      endX,
+      endY,
+      azimuthDeg: Math.round(azimuthDeg * 10) / 10,
+      lengthM: Math.round(lengthM),
+      color,
+      visible: true,
+    });
+  });
+
+  // Compute min/max Easting and Northing by scanning the actual xCoords/yCoords arrays of every line's dataset
+  for (const line of lines) {
+    const ds = line.dataset;
+    if (ds.xCoords && ds.yCoords) {
+      const len = Math.min(ds.xCoords.length, ds.yCoords.length);
+      for (let t = 0; t < len; t++) {
+        const x = ds.xCoords[t];
+        const y = ds.yCoords[t];
+        if (typeof x === 'number' && typeof y === 'number' && isFinite(x) && isFinite(y)) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+  }
+
+  // Calculate line intersections / tie points
+  const intersections: LineIntersection[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i + 1; j < lines.length; j++) {
+      const l1 = lines[i];
+      const l2 = lines[j];
+      const inter = findLineIntersection(
+        { x: l1.startX, y: l1.startY },
+        { x: l1.endX, y: l1.endY },
+        { x: l2.startX, y: l2.startY },
+        { x: l2.endX, y: l2.endY }
+      );
+
+      if (inter) {
+        const trace1 = Math.round(inter.uA * (l1.dataset.nTraces - 1));
+        const trace2 = Math.round(inter.uB * (l2.dataset.nTraces - 1));
+        let diffAz = Math.abs(l1.azimuthDeg - l2.azimuthDeg) % 180;
+        if (diffAz > 90) diffAz = 180 - diffAz;
+        const angleDeg = Math.round(diffAz * 10) / 10;
+
+        intersections.push({
+          line1Id: l1.id,
+          line1Name: l1.name,
+          line1TraceIdx: trace1,
+          line2Id: l2.id,
+          line2Name: l2.name,
+          line2TraceIdx: trace2,
+          x: Math.round(inter.x),
+          y: Math.round(inter.y),
+          angleDeg,
+        });
+      }
+    }
+  }
+
+  // Ensure minimum spatial bounding box margin if no coordinates existed
+  if (!isFinite(minX) || !isFinite(maxX) || minX >= maxX) {
+    minX = 0;
+    maxX = 5000;
+  }
+  if (!isFinite(minY) || !isFinite(maxY) || minY >= maxY) {
+    minY = 0;
+    maxY = 5000;
+  }
+
+  const rawSpanX = maxX - minX;
+  const rawSpanY = maxY - minY;
+  const padX = rawSpanX > 0 ? rawSpanX * 0.03 : 100;
+  const padY = rawSpanY > 0 ? rawSpanY * 0.03 : 100;
+  const boundedMinX = minX - padX;
+  const boundedMaxX = maxX + padX;
+  const boundedMinY = minY - padY;
+  const boundedMaxY = maxY + padY;
+
+  const survey: MultiLine2DSurvey = {
+    id: `survey_${Date.now()}`,
+    name: surveyName,
+    lines,
+    bounds: {
+      minX: Math.floor(boundedMinX),
+      maxX: Math.ceil(boundedMaxX),
+      minY: Math.floor(boundedMinY),
+      maxY: Math.ceil(boundedMaxY),
+      minT: 0,
+      maxT: (nSamples - 1) * sampleRate,
+    },
+    intersections,
+    gridNx: 32,
+    gridNy: 32,
+    inlineSpacingM: 25,
+    crosslineSpacingM: 25,
+    sampleRate,
+    nSamples,
+  };
+
+  return survey;
+}
+
+/**
+ * Spatial Inverse Distance Weighting (IDW) 3D Interpolation
+ * Converts an aggregation of 2D seismic lines into a regular 3D Seismic Cube (Pseudo-Volume)
+ */
+export function interpolate2DLinesTo3DCube(
+  survey: MultiLine2DSurvey,
+  gridNx: number = 32,
+  gridNy: number = 32,
+  power: number = 2.0,
+  smoothing: number = 0.5
+): SeismicDataset {
+  const { lines, bounds, sampleRate, nSamples } = survey;
+  const activeLines = lines.filter((l) => l.visible);
+
+  if (activeLines.length === 0) {
+    throw new Error('At least one visible 2D line is required for 3D construction.');
+  }
+
+  const { minX, maxX, minY, maxY } = bounds;
+  const spanX = Math.max(10, maxX - minX);
+  const spanY = Math.max(10, maxY - minY);
+
+  const dx = spanX / Math.max(1, gridNx - 1);
+  const dy = spanY / Math.max(1, gridNy - 1);
+
+  // Flatten all available 2D traces with spatial coords
+  interface SpatialTrace {
+    x: number;
+    y: number;
+    data: Float32Array;
+    nSamples: number;
+  }
+
+  const allTraces: SpatialTrace[] = [];
+  for (const line of activeLines) {
+    const ds = line.dataset;
+    const nTraces = ds.nTraces;
+    for (let t = 0; t < nTraces; t++) {
+      let x = line.startX + (t / Math.max(1, nTraces - 1)) * (line.endX - line.startX);
+      let y = line.startY + (t / Math.max(1, nTraces - 1)) * (line.endY - line.startY);
+      if (ds.xCoords && ds.xCoords[t] !== undefined) x = ds.xCoords[t];
+      if (ds.yCoords && ds.yCoords[t] !== undefined) y = ds.yCoords[t];
+
+      const traceData = new Float32Array(nSamples);
+      const startIdx = t * ds.nSamples;
+      for (let s = 0; s < nSamples; s++) {
+        traceData[s] = ds.data[startIdx + s] || 0;
+      }
+
+      allTraces.push({ x, y, data: traceData, nSamples });
+    }
+  }
+
+  const totalCubeTraces = gridNy * gridNx;
+  const cubeData = new Float32Array(totalCubeTraces * nSamples);
+
+  // Spatial search parameters
+  const maxSearchDist = Math.sqrt(spanX * spanX + spanY * spanY) * 0.75;
+  const kNearest = Math.min(allTraces.length, 8);
+
+  // Interpolate for every grid node (il = row / Y, xl = col / X)
+  for (let iy = 0; iy < gridNy; iy++) {
+    const gridY = minY + iy * dy;
+    for (let ix = 0; ix < gridNx; ix++) {
+      const gridX = minX + ix * dx;
+      const gridTraceIdx = iy * gridNx + ix;
+
+      // Find K-nearest 2D traces
+      const dists: { idx: number; dist: number }[] = [];
+      for (let t = 0; t < allTraces.length; t++) {
+        const dX = allTraces[t].x - gridX;
+        const dY = allTraces[t].y - gridY;
+        const dist = Math.sqrt(dX * dX + dY * dY);
+        dists.push({ idx: t, dist });
+      }
+
+      dists.sort((a, b) => a.dist - b.dist);
+      const neighbors = dists.slice(0, kNearest);
+
+      // Check if exact match (very close to a 2D trace)
+      if (neighbors[0].dist < 1e-4) {
+        const exactTrace = allTraces[neighbors[0].idx].data;
+        for (let s = 0; s < nSamples; s++) {
+          cubeData[gridTraceIdx * nSamples + s] = exactTrace[s];
+        }
+        continue;
+      }
+
+      // Compute IDW weights
+      let weightSum = 0;
+      const weights: number[] = [];
+      for (let k = 0; k < neighbors.length; k++) {
+        const d = Math.max(1.0, neighbors[k].dist);
+        const w = 1.0 / Math.pow(d, power);
+        weights.push(w);
+        weightSum += w;
+      }
+
+      // Interpolate amplitude at each time sample
+      for (let s = 0; s < nSamples; s++) {
+        let ampSum = 0;
+        for (let k = 0; k < neighbors.length; k++) {
+          const sampleVal = allTraces[neighbors[k].idx].data[s];
+          ampSum += sampleVal * weights[k];
+        }
+        cubeData[gridTraceIdx * nSamples + s] = weightSum > 0 ? ampSum / weightSum : 0;
+      }
+    }
+  }
+
+  // Optional 3D spatial smoothing filter across grid nodes
+  if (smoothing > 0) {
+    const smoothedData = new Float32Array(cubeData.length);
+    for (let s = 0; s < nSamples; s++) {
+      for (let iy = 0; iy < gridNy; iy++) {
+        for (let ix = 0; ix < gridNx; ix++) {
+          let sum = 0;
+          let count = 0;
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              const ny = iy + dy;
+              const nx = ix + dx;
+              if (ny >= 0 && ny < gridNy && nx >= 0 && nx < gridNx) {
+                const w = dx === 0 && dy === 0 ? 4 : (dx === 0 || dy === 0 ? 2 : 1);
+                sum += cubeData[(ny * gridNx + nx) * nSamples + s] * w;
+                count += w;
+              }
+            }
+          }
+          const raw = cubeData[(iy * gridNx + ix) * nSamples + s];
+          const sm = sum / count;
+          smoothedData[(iy * gridNx + ix) * nSamples + s] = raw * (1 - smoothing) + sm * smoothing;
+        }
+      }
+    }
+    cubeData.set(smoothedData);
+  }
+
+  const ilines = Array.from({ length: gridNy }, (_, i) => 100 + i);
+  const xlines = Array.from({ length: gridNx }, (_, i) => 200 + i);
+  const totalTimeMs = (nSamples - 1) * sampleRate;
+  const ramMb = Math.round((cubeData.byteLength / (1024 * 1024)) * 10) / 10;
+
+  const dataset: SeismicDataset = {
+    type: '3d',
+    data: cubeData,
+    nInlines: gridNy,
+    nCrosslines: gridNx,
+    nTraces: totalCubeTraces,
+    nSamples,
+    sampleRate,
+    totalTimeMs,
+    ilines,
+    xlines,
+    source: 'multi-line-interpolated',
+    name: `${survey.name} (3D Interpolated Volume)`,
+    ramMb,
+    multiLineSurvey: survey,
+  };
+
+  dataset.meanTrace = computeMeanAmplitudeTrace(dataset);
+  dataset.envelope = computeEnvelopeTrace(dataset.meanTrace);
+
+  // Update the survey with the generated cube
+  survey.interpolatedCube = dataset;
+
+  return dataset;
+}
+
+/**
+ * Generate a realistic Multi-Line 2D Exploration Survey preset (e.g. 11 intersecting lines)
+ */
+export function generateSyntheticMultiLineSurvey(
+  presetType: 'exploration_11_lines' | 'north_sea_grid' | 'fault_block_grid' | 'regional_transects' = 'exploration_11_lines'
+): MultiLine2DSurvey {
+  if (presetType === 'exploration_11_lines') {
+    const lines: SeismicDataset[] = [];
+    SYNTHETIC_3D_LINE_TRAJECTORIES.forEach((traj, idx) => {
+      const line = generateSynthetic2DLine(350, 1200, 4.0, traj.name);
+      line.lineName = traj.name;
+      line.xCoords = Array.from({ length: 350 }, (_, t) => traj.startX + (t / 349) * (traj.endX - traj.startX));
+      line.yCoords = Array.from({ length: 350 }, (_, t) => traj.startY + (t / 349) * (traj.endY - traj.startY));
+      lines.push(line);
+    });
+    const survey = buildMultiLineSurvey(lines, '11-Line Regional 3D Fence Exploration Survey');
+    interpolate2DLinesTo3DCube(survey, 36, 36);
+    return survey;
+  } else if (presetType === 'fault_block_grid') {
+    const lines: SeismicDataset[] = [];
+    // 3 parallel dip lines (Line-101, Line-102, Line-103)
+    for (let i = 0; i < 3; i++) {
+      const line = generateSynthetic2DLine(350, 1100, 4.0, `Dip Line ${101 + i}`);
+      line.xCoords = Array.from({ length: 350 }, (_, t) => 1000 + t * 25);
+      line.yCoords = Array.from({ length: 350 }, () => 2000 + i * 1500);
+      lines.push(line);
+    }
+    // 2 strike tie-lines (Line-201, Line-202)
+    for (let j = 0; j < 2; j++) {
+      const line = generateSynthetic2DLine(300, 1100, 4.0, `Strike Line ${201 + j}`);
+      line.xCoords = Array.from({ length: 300 }, () => 3000 + j * 3500);
+      line.yCoords = Array.from({ length: 300 }, (_, t) => 1000 + t * 25);
+      lines.push(line);
+    }
+    const survey = buildMultiLineSurvey(lines, 'Fault-Block 2D Exploration Grid (5 Lines)');
+    interpolate2DLinesTo3DCube(survey, 32, 32);
+    return survey;
+  } else if (presetType === 'regional_transects') {
+    const lines: SeismicDataset[] = [];
+    const names = ['Regional Basin Line A', 'Regional Basin Line B', 'Cross-Basin Tie Line 1', 'Cross-Basin Tie Line 2'];
+    for (let i = 0; i < 2; i++) {
+      const line = generateSynthetic2DLine(400, 1200, 4.0, names[i]);
+      line.xCoords = Array.from({ length: 400 }, (_, t) => 500 + t * 30);
+      line.yCoords = Array.from({ length: 400 }, () => 1500 + i * 2500);
+      lines.push(line);
+    }
+    for (let j = 0; j < 2; j++) {
+      const line = generateSynthetic2DLine(350, 1200, 4.0, names[2 + j]);
+      line.xCoords = Array.from({ length: 350 }, () => 3500 + j * 4500);
+      line.yCoords = Array.from({ length: 350 }, (_, t) => 500 + t * 30);
+      lines.push(line);
+    }
+    const survey = buildMultiLineSurvey(lines, 'Regional Basin Exploration Transects (4 Lines)');
+    interpolate2DLinesTo3DCube(survey, 32, 32);
+    return survey;
+  }
+
+  // Default: North Sea 5-Line Grid (3 Dip + 2 Strike Lines)
+  const lines: SeismicDataset[] = [];
+  const dipNames = ['Brent Dip Profile 101', 'Brent Central Dip 102', 'Brent Dip Profile 103'];
+  for (let i = 0; i < 3; i++) {
+    const line = generateSynthetic2DLine(360, 1200, 4.0, dipNames[i]);
+    line.xCoords = Array.from({ length: 360 }, (_, t) => 1000 + t * 25);
+    line.yCoords = Array.from({ length: 360 }, () => 1500 + i * 1200);
+    lines.push(line);
+  }
+
+  const strikeNames = ['Brent Crestal Strike 201', 'Brent Flank Strike 202'];
+  for (let j = 0; j < 2; j++) {
+    const line = generateSynthetic2DLine(320, 1200, 4.0, strikeNames[j]);
+    line.xCoords = Array.from({ length: 320 }, () => 3000 + j * 3200);
+    line.yCoords = Array.from({ length: 320 }, (_, t) => 800 + t * 25);
+    lines.push(line);
+  }
+
+  const survey = buildMultiLineSurvey(lines, 'North Sea Brent 5-Line Exploration Grid');
+  interpolate2DLinesTo3DCube(survey, 32, 32);
+  return survey;
+}
+
+export const MULTI_LINE_PRESETS = [
+  {
+    id: 'exploration_11_lines',
+    name: '11-Line Regional 3D Fence Exploration Survey (Complete Network)',
+    description: '11 intersecting 2D fence curtains: 4 Dip lines, 4 Strike lines, 2 Diagonal ties, and 1 Sinuous cross-line forming a comprehensive 3D exploration network.',
+    linesCount: 11,
+    tracesTotal: 3850,
+    presetKey: 'exploration_11_lines' as const,
+  },
+  {
+    id: 'north_sea_grid',
+    name: 'North Sea 5-Line Exploration Grid (3 Dip + 2 Strike)',
+    description: '3 parallel dip profiles across fault rotation intersected by 2 strike tie-lines through crest and flank.',
+    linesCount: 5,
+    tracesTotal: 1720,
+    presetKey: 'north_sea_grid' as const,
+  },
+  {
+    id: 'fault_block_grid',
+    name: 'Fault-Block 2D Multi-Line Grid (5 Lines)',
+    description: 'Dense 2D grid with 3 dip lines and 2 orthogonal tie lines capturing structural closure and rollover.',
+    linesCount: 5,
+    tracesTotal: 1650,
+    presetKey: 'fault_block_grid' as const,
+  },
+  {
+    id: 'regional_transects',
+    name: 'Regional Basin Multi-Transect (4 Long Lines)',
+    description: 'Broad regional 2D lines intersecting deep depocenters and basin margins for regional structural framework.',
+    linesCount: 4,
+    tracesTotal: 1500,
+    presetKey: 'regional_transects' as const,
+  },
+];
+

@@ -58,6 +58,56 @@ export interface SegyImportOptions {
   maxTraces?: number;
 }
 
+export interface Seismic2DLineInfo {
+  id: string;
+  name: string;
+  dataset: SeismicDataset;
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+  azimuthDeg: number;
+  lengthM: number;
+  color: string;
+  visible: boolean;
+  inlineEquivalent?: number;
+}
+
+export interface LineIntersection {
+  line1Id: string;
+  line1Name: string;
+  line1TraceIdx: number;
+  line2Id: string;
+  line2Name: string;
+  line2TraceIdx: number;
+  x: number;
+  y: number;
+  angleDeg?: number;
+  timeDiffMs?: number;
+}
+
+export interface MultiLine2DSurvey {
+  id: string;
+  name: string;
+  lines: Seismic2DLineInfo[];
+  bounds: {
+    minX: number;
+    maxX: number;
+    minY: number;
+    maxY: number;
+    minT: number;
+    maxT: number;
+  };
+  intersections: LineIntersection[];
+  interpolatedCube?: SeismicDataset;
+  gridNx: number;
+  gridNy: number;
+  inlineSpacingM: number;
+  crosslineSpacingM: number;
+  sampleRate: number;
+  nSamples: number;
+}
+
 export interface SeismicDataset {
   type: SeismicType; // '2d' or '3d'
   data: Float32Array; // For 3D: [nInlines * nCrosslines * nSamples], for 2D: [nTraces * nSamples]
@@ -73,7 +123,7 @@ export interface SeismicDataset {
   shotPoints?: number[];
   xCoords?: number[];
   yCoords?: number[];
-  source: 'synthetic' | 'segy' | 'preset' | '2d-preset';
+  source: 'synthetic' | 'segy' | 'preset' | '2d-preset' | 'multi-line-interpolated';
   name: string;
   lineName?: string;
   ramMb: number;
@@ -83,6 +133,7 @@ export interface SeismicDataset {
   binaryHeader?: SeismicBinaryHeader;
   sampleTraceHeaders?: TraceHeader[];
   isLittleEndian?: boolean;
+  multiLineSurvey?: MultiLine2DSurvey;
 }
 
 // Seamless alias for backwards compatibility

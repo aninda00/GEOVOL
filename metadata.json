@@ -1,6 +1,6 @@
 {
   "name": "GeoVol — Reservoir Volumetrics",
-  "description": "A professional-grade geoscience application for calculating OIIP and GIIP from 3D seismic data, automated horizon picking, petrophysics (manual & LAS), and Monte Carlo uncertainty analysis.",
+  "description": "A professional-grade geoscience application for calculating OIIP and GIIP from 2D/3D seismic data, multi-file SEG-Y parsing, 3D volume construction from 2D surveys, interactive 3D seismic cube & fence diagram manipulation, automated horizon picking, petrophysics (manual & LAS), and Monte Carlo uncertainty analysis.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
