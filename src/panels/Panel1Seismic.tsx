@@ -234,14 +234,35 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
     setSuggestions(suggestHorizons(dataset, dataset.sampleRate, 8).suggestions);
     if (dataset.type === '2d') {
       setSliceType('2d-line');
-      setMainViewMode(dataset.multiLineSurvey ? '3d-window' : 'section');
+      setMainViewMode('section');
       setTraceRangeStart(0);
       setTraceRangeEnd(dataset.nTraces);
+      if (dataset.multiLineSurvey?.lines[0]) {
+        setSelectedSurveyLineId(dataset.multiLineSurvey.lines[0].id);
+      }
     } else {
       setSliceType('inline');
       setMainViewMode('3d-window');
       setSliceIdx(Math.floor(dataset.nInlines / 2));
     }
+  };
+
+  const handleSelectLine = (lineId: string) => {
+    if (!cube?.multiLineSurvey) return;
+    const lineInfo = cube.multiLineSurvey.lines.find((l) => l.id === lineId || l.name === lineId);
+    if (!lineInfo) return;
+
+    setSelectedSurveyLineId(lineInfo.id);
+
+    const lineDataset: SeismicDataset = {
+      ...lineInfo.dataset,
+      multiLineSurvey: cube.multiLineSurvey,
+    };
+    onCubeLoaded(lineDataset);
+    setSuggestions(suggestHorizons(lineDataset, lineDataset.sampleRate, 8).suggestions);
+    setSliceType('2d-line');
+    setTraceRangeStart(0);
+    setTraceRangeEnd(lineDataset.nTraces);
   };
 
   return (
@@ -702,7 +723,10 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
             <MultiLineSurveyBasemap
               survey={cube.multiLineSurvey}
               selectedLineId={selectedSurveyLineId}
-              onSelectLine={(id) => setSelectedSurveyLineId(id)}
+              onSelectLine={(id) => {
+                setSelectedSurveyLineId(id);
+                handleSelectLine(id);
+              }}
             />
           )}
 
@@ -715,6 +739,8 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
               gain={gain}
               displayMode={displayMode}
               traceRange={cube.type === '2d' ? [traceRangeStart, traceRangeEnd] : undefined}
+              onSelect2DLine={handleSelectLine}
+              selectedLineId={selectedSurveyLineId}
             />
           )}
 

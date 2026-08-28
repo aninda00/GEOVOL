@@ -12,6 +12,7 @@ import {
   Minimize2,
   TrendingUp,
   Activity,
+  ChevronDown,
 } from 'lucide-react';
 
 interface SeismicSectionCanvasProps {
@@ -28,6 +29,8 @@ interface SeismicSectionCanvasProps {
   agcWindowMs?: number;
   traceRange?: [number, number]; // [startTraceIdx, endTraceIdx] for 2D zooming
   onPickPoint?: (traceIdx: number, sampleIdx: number) => void;
+  onSelect2DLine?: (lineId: string) => void;
+  selectedLineId?: string | null;
 }
 
 export const SeismicSectionCanvas: React.FC<SeismicSectionCanvasProps> = ({
@@ -44,6 +47,8 @@ export const SeismicSectionCanvas: React.FC<SeismicSectionCanvasProps> = ({
   agcWindowMs = 250,
   traceRange,
   onPickPoint,
+  onSelect2DLine,
+  selectedLineId,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -506,14 +511,51 @@ export const SeismicSectionCanvas: React.FC<SeismicSectionCanvasProps> = ({
       {/* Main Canvas Area with Axis Guides */}
       <div ref={containerRef} className="relative flex-1 bg-[#050c17] flex flex-col p-3 overflow-hidden">
         {/* Top Horizontal Axis */}
-        <div className="flex justify-between items-center text-[10px] font-mono text-[#8aafc0] px-8 pb-1 border-b border-[#2a9bb0]/20">
-          <span>
+        <div className="flex justify-between items-center text-[10px] font-mono text-[#8aafc0] px-6 pb-1.5 border-b border-[#2a9bb0]/20 gap-2">
+          <span className="truncate max-w-[180px]">
             {sliceData.type === '2d-traces' ? `Start: ${sliceData.traceLabel} ${sliceData.traceStart}` : 'Crossline 0'}
           </span>
-          <span className="text-[#2a9bb0] font-bold">
-            {cube.type === '2d' ? `${cube.name} (2D Seismic Profile)` : sliceType.toUpperCase()}
-          </span>
-          <span>
+
+          {/* 2D Seismic Profile Dropdown / Header */}
+          {cube.multiLineSurvey && cube.multiLineSurvey.lines.length > 0 ? (
+            <div className="flex items-center gap-1.5 bg-[#071322] border border-[#2a9bb0]/50 hover:border-[#00f0ff] rounded-md px-2.5 py-1 transition-all shadow-md group">
+              <span
+                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                style={{
+                  backgroundColor:
+                    cube.multiLineSurvey.lines.find(
+                      (l) => l.name === cube.name || l.dataset.name === cube.name || l.id === selectedLineId
+                    )?.color || '#00f0ff',
+                }}
+              />
+              <span className="text-[10px] font-sans font-semibold text-[#8aafc0] hidden md:inline">2D Profile:</span>
+              <div className="relative flex items-center">
+                <select
+                  id="seismic-profile-dropdown"
+                  value={
+                    cube.multiLineSurvey.lines.find(
+                      (l) => l.name === cube.name || l.dataset.name === cube.name || l.id === selectedLineId
+                    )?.id || cube.multiLineSurvey.lines[0]?.id
+                  }
+                  onChange={(e) => onSelect2DLine?.(e.target.value)}
+                  className="bg-transparent text-[#00f0ff] group-hover:text-white font-bold text-xs font-sans focus:outline-none cursor-pointer pr-5 appearance-none max-w-[280px] truncate"
+                >
+                  {cube.multiLineSurvey.lines.map((line) => (
+                    <option key={line.id} value={line.id} className="bg-[#0b1b30] text-[#e8f4f8]">
+                      {line.name} ({line.dataset.nTraces} Traces, {Math.round(line.lengthM)}m)
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown className="w-3.5 h-3.5 text-[#00f0ff] absolute right-0 pointer-events-none group-hover:translate-y-0.5 transition-transform" />
+              </div>
+            </div>
+          ) : (
+            <span className="text-[#2a9bb0] font-bold bg-[#071322] border border-[#2a9bb0]/30 rounded-md px-2.5 py-0.5">
+              {cube.type === '2d' ? `${cube.name} (2D Seismic Profile)` : sliceType.toUpperCase()}
+            </span>
+          )}
+
+          <span className="truncate max-w-[180px] text-right">
             {sliceData.type === '2d-traces'
               ? `End: ${sliceData.traceLabel} ${sliceData.traceStart + sliceData.nTraces - 1}`
               : `Crossline ${sliceData.nCrosslines}`}
