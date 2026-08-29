@@ -1,15 +1,6 @@
 import React, { useState } from 'react';
-import { SeismicDataset, HorizonSuggestion, MultiLine2DSurvey } from '../types';
-import {
-  generateSyntheticCube,
-  generateSynthetic2DLine,
-  suggestHorizons,
-  GEOLOGICAL_PRESETS_3D,
-  GEOLOGICAL_PRESETS_2D,
-  MULTI_LINE_PRESETS,
-  generateSyntheticMultiLineSurvey,
-  interpolate2DLinesTo3DCube,
-} from '../modules/seismicEngine';
+import { SeismicDataset, HorizonSuggestion, WellData } from '../types';
+import { suggestHorizons } from '../modules/seismicEngine';
 import { SeismicSectionCanvas } from '../components/SeismicSectionCanvas';
 import { SpectrumChart } from '../components/SpectrumChart';
 import { SegyImportModal, SegyFileItem } from '../components/SegyImportModal';
@@ -17,39 +8,32 @@ import { Interactive3DSeismicWindow } from '../components/Interactive3DSeismicWi
 import { MultiLineSurveyBasemap } from '../components/MultiLineSurveyBasemap';
 import {
   UploadCloud,
-  Database,
-  Sparkles,
-  Sliders,
-  FileText,
-  Activity,
-  Layers,
   ChevronRight,
   Info,
-  TrendingUp,
-  Cpu,
-  Compass,
   Box,
-  Grid,
   MapPin,
   Eye,
+  FileCheck,
+  FolderOpen,
+  Activity,
+  Layers,
 } from 'lucide-react';
 
 interface Panel1SeismicProps {
   cube: SeismicDataset | null;
   onCubeLoaded: (dataset: SeismicDataset) => void;
   onNavigateNext: () => void;
+  wells?: WellData[];
 }
 
 export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
   cube,
   onCubeLoaded,
   onNavigateNext,
+  wells = [],
 }) => {
-  const [loadCategory, setLoadCategory] = useState<
-    '3d-demo' | '2d-demo' | 'multiline-demo' | 'presets' | 'upload'
-  >('3d-demo');
-  const [mainViewMode, setMainViewMode] = useState<'section' | '3d-window' | 'basemap'>('3d-window');
-  const [sliceType, setSliceType] = useState<'inline' | 'crossline' | 'timeslice' | '2d-line'>('inline');
+  const [mainViewMode, setMainViewMode] = useState<'section' | '3d-window' | 'basemap'>('section');
+  const [sliceType, setSliceType] = useState<'inline' | 'crossline' | 'timeslice' | '2d-line'>('2d-line');
   const [sliceIdx, setSliceIdx] = useState<number>(16);
   const [colorMap, setColorMap] = useState<'RdBu' | 'Gray' | 'Seismic' | 'Thermal' | 'Rainbow'>('RdBu');
   const [gain, setGain] = useState<number>(1.0);
@@ -57,6 +41,7 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
   const [showTextHeader, setShowTextHeader] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
 
   // 2D Trace Zoom Range
   const [traceRangeStart, setTraceRangeStart] = useState<number>(0);
@@ -77,119 +62,7 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
     return [];
   });
 
-  const handleGenerate2D = () => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    setTimeout(() => {
-      try {
-        const dataset = generateSynthetic2DLine(400, 1000, 4.0, 'Synthetic 2D Regional Profile (Line-201)');
-        onCubeLoaded(dataset);
-        setSuggestions(suggestHorizons(dataset, dataset.sampleRate, 8).suggestions);
-        setSliceType('2d-line');
-        setMainViewMode('section');
-        setTraceRangeStart(0);
-        setTraceRangeEnd(dataset.nTraces);
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Failed to generate 2D seismic line');
-      } finally {
-        setIsLoading(false);
-      }
-    }, 100);
-  };
-
-  const handleGenerate3D = () => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    setTimeout(() => {
-      try {
-        const newCube = generateSyntheticCube(32, 32, 1000, 4.0, 'Synthetic Reservoir 3D Cube');
-        onCubeLoaded(newCube);
-        setSuggestions(suggestHorizons(newCube, newCube.sampleRate, 8).suggestions);
-        setSliceType('inline');
-        setMainViewMode('3d-window');
-        setSliceIdx(Math.floor(newCube.nInlines / 2));
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Failed to generate 3D synthetic volume');
-      } finally {
-        setIsLoading(false);
-      }
-    }, 100);
-  };
-
-  const handleGenerateMultiLineSurvey = (presetId: string = 'exploration_11_lines') => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    setTimeout(() => {
-      try {
-        const preset = MULTI_LINE_PRESETS.find((p) => p.id === presetId) || MULTI_LINE_PRESETS[0];
-        const survey = generateSyntheticMultiLineSurvey(preset.presetKey);
-        // Interpolate into 3D volume with embedded multi-line survey
-        const dataset = interpolate2DLinesTo3DCube(survey, 32, 32, 2.0, 0.5);
-        onCubeLoaded(dataset);
-        setSuggestions(suggestHorizons(dataset, dataset.sampleRate, 8).suggestions);
-        setSliceType('inline');
-        setMainViewMode('3d-window');
-        setSliceIdx(Math.floor(dataset.nInlines / 2));
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Failed to construct 3D volume from 2D multi-line survey');
-      } finally {
-        setIsLoading(false);
-      }
-    }, 100);
-  };
-
-  const handleSelectPreset3D = (preset: typeof GEOLOGICAL_PRESETS_3D[0]) => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    setTimeout(() => {
-      try {
-        const dataset = generateSyntheticCube(
-          preset.nInlines,
-          preset.nCrosslines,
-          preset.nSamples,
-          preset.sampleRate,
-          preset.name
-        );
-        onCubeLoaded(dataset);
-        setSuggestions(suggestHorizons(dataset, dataset.sampleRate, 8).suggestions);
-        setSliceType('inline');
-        setMainViewMode('3d-window');
-        setSliceIdx(Math.floor(dataset.nInlines / 2));
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Failed to load 3D preset');
-      } finally {
-        setIsLoading(false);
-      }
-    }, 100);
-  };
-
-  const handleSelectPreset2D = (preset: typeof GEOLOGICAL_PRESETS_2D[0]) => {
-    setIsLoading(true);
-    setErrorMessage(null);
-    setTimeout(() => {
-      try {
-        const dataset = generateSynthetic2DLine(
-          preset.nTraces,
-          preset.nSamples,
-          preset.sampleRate,
-          preset.name
-        );
-        onCubeLoaded(dataset);
-        setSuggestions(suggestHorizons(dataset, dataset.sampleRate, 8).suggestions);
-        setSliceType('2d-line');
-        setMainViewMode('section');
-        setTraceRangeStart(0);
-        setTraceRangeEnd(dataset.nTraces);
-      } catch (err: any) {
-        setErrorMessage(err.message || 'Failed to load 2D preset');
-      } finally {
-        setIsLoading(false);
-      }
-    }, 100);
-  };
-
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
+  const processFileList = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
 
     setIsLoading(true);
@@ -226,6 +99,30 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      await processFileList(e.target.files);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      await processFileList(e.dataTransfer.files);
+    }
+  };
+
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setIsDragging(false);
   };
 
   const handleConfirmImport = (dataset: SeismicDataset) => {
@@ -274,7 +171,7 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
             <div className="flex items-center gap-2">
               <span className="text-2xl">🔬</span>
               <h2 className="text-xl font-bold text-[#e8f4f8]">
-                Panel 1 — Seismic Interpretation Workbench & Multi-SEGY 3D Aggregator
+                Panel 1 — Seismic Interpretation Workbench
               </h2>
               {cube && (
                 <span
@@ -286,14 +183,14 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
                 >
                   {cube.type === '2d'
                     ? cube.multiLineSurvey
-                      ? '🌐 2D MULTI-LINE FENCE SURVEY'
-                      : '📈 2D SEISMIC LINE'
-                    : '🧊 3D SEISMIC CUBE'}
+                      ? `🌐 ${cube.multiLineSurvey.lines.length}-LINE 2D SURVEY`
+                      : '📈 2D SEISMIC PROFILE'
+                    : '🧊 3D SEISMIC VOLUME'}
                 </span>
               )}
             </div>
             <p className="text-sm text-[#8aafc0] mt-1">
-              Petrel-grade seismic workspace: parse multiple 2D SEG-Y files, interpolate into 3D constructs, manipulate interactive 3D orthogonal slices, chair cuts, and 2D fence ribbons.
+              Petrel-grade seismic workspace: upload and inspect single or multi-line SEG-Y datasets, QC trace headers, examine seismic profiles, and track horizon candidate reflectors.
             </p>
           </div>
 
@@ -308,267 +205,76 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
         </div>
       </div>
 
-      {/* Loader Controls */}
+      {/* SEG-Y Data Import & Management Section */}
       <div className="bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl p-5 shadow-lg">
-        <h3 className="text-sm font-semibold text-[#2a9bb0] uppercase tracking-wider mb-4 flex items-center gap-2">
-          <Database className="w-4 h-4" /> Select Dataset / Seismic Source
-        </h3>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2">
+            <FolderOpen className="w-5 h-5 text-[#00f0ff]" />
+            <h3 className="text-sm font-semibold text-[#2a9bb0] uppercase tracking-wider">
+              SEG-Y Seismic Dataset Source
+            </h3>
+          </div>
 
-        {/* Source Categories Tabs */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3 mb-4">
-          <button
-            onClick={() => setLoadCategory('multiline-demo')}
-            className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-all ${
-              loadCategory === 'multiline-demo'
-                ? 'bg-[#1a3d54] border-[#00f0ff] shadow-md ring-1 ring-[#00f0ff]'
-                : 'bg-[#0b1b30] border-[#2a9bb0]/20 hover:border-[#2a9bb0]/40'
-            }`}
-          >
-            <div className="p-2 bg-[#00f0ff]/20 rounded text-[#00f0ff]">
-              <Grid className="w-5 h-5" />
+          {cube && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-[#8aafc0] hidden sm:inline">Active File:</span>
+              <span className="text-xs font-mono font-bold text-[#00f0ff] bg-[#071322] px-2.5 py-1 rounded border border-[#2a9bb0]/30 truncate max-w-xs">
+                {cube.name}
+              </span>
             </div>
-            <div>
-              <div className="font-bold text-xs text-[#e8f4f8]">Multi-Line 2D → 3D</div>
-              <div className="text-[11px] text-[#8aafc0]">5-line survey construct</div>
-            </div>
-          </button>
-
-          <button
-            onClick={() => setLoadCategory('3d-demo')}
-            className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-all ${
-              loadCategory === '3d-demo'
-                ? 'bg-[#1a3d54] border-[#00f0ff] shadow-md ring-1 ring-[#00f0ff]'
-                : 'bg-[#0b1b30] border-[#2a9bb0]/20 hover:border-[#2a9bb0]/40'
-            }`}
-          >
-            <div className="p-2 bg-[#00f0ff]/20 rounded text-[#00f0ff]">
-              <Box className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="font-bold text-xs text-[#e8f4f8]">3D Volume Cube</div>
-              <div className="text-[11px] text-[#8aafc0]">32 IL × 32 XL dome</div>
-            </div>
-          </button>
-
-          <button
-            onClick={() => setLoadCategory('2d-demo')}
-            className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-all ${
-              loadCategory === '2d-demo'
-                ? 'bg-[#1a3d54] border-[#2ecc71] shadow-md ring-1 ring-[#2ecc71]'
-                : 'bg-[#0b1b30] border-[#2a9bb0]/20 hover:border-[#2a9bb0]/40'
-            }`}
-          >
-            <div className="p-2 bg-[#2ecc71]/20 rounded text-[#2ecc71]">
-              <TrendingUp className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="font-bold text-xs text-[#e8f4f8]">2D Single Line</div>
-              <div className="text-[11px] text-[#8aafc0]">400 CMP regional transect</div>
-            </div>
-          </button>
-
-          <button
-            onClick={() => setLoadCategory('presets')}
-            className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-all ${
-              loadCategory === 'presets'
-                ? 'bg-[#1a3d54] border-[#f0a500] shadow-md ring-1 ring-[#f0a500]'
-                : 'bg-[#0b1b30] border-[#2a9bb0]/20 hover:border-[#2a9bb0]/40'
-            }`}
-          >
-            <div className="p-2 bg-[#f0a500]/20 rounded text-[#f0a500]">
-              <Layers className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="font-bold text-xs text-[#e8f4f8]">Geological Presets</div>
-              <div className="text-[11px] text-[#8aafc0]">Exploration Surveys</div>
-            </div>
-          </button>
-
-          <button
-            onClick={() => setLoadCategory('upload')}
-            className={`flex items-center gap-3 p-3 rounded-lg border text-left transition-all ${
-              loadCategory === 'upload'
-                ? 'bg-[#1a3d54] border-[#2a9bb0] shadow-md ring-1 ring-[#2a9bb0]'
-                : 'bg-[#0b1b30] border-[#2a9bb0]/20 hover:border-[#2a9bb0]/40'
-            }`}
-          >
-            <div className="p-2 bg-[#2a9bb0]/20 rounded text-[#2a9bb0]">
-              <UploadCloud className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="font-bold text-xs text-[#e8f4f8]">Import SEG-Y File(s)</div>
-              <div className="text-[11px] text-[#8aafc0]">Single or multi-line files</div>
-            </div>
-          </button>
+          )}
         </div>
 
-        {/* Source Action Section */}
-        {loadCategory === 'multiline-demo' && (
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-[#071322] p-4 rounded-lg border border-[#00f0ff]/30">
+        {/* Drag & Drop / File Select Zone */}
+        <div
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`p-6 rounded-xl border-2 border-dashed transition-all text-center ${
+            isDragging
+              ? 'bg-[#1a3d54]/80 border-[#00f0ff] scale-[1.005]'
+              : 'bg-[#071322] border-[#2a9bb0]/40 hover:border-[#2a9bb0]'
+          }`}
+        >
+          <input
+            type="file"
+            multiple
+            accept=".sgy,.segy"
+            id="segy-upload-main"
+            onChange={handleFileUpload}
+            className="hidden"
+          />
+
+          <div className="max-w-xl mx-auto space-y-3">
+            <div className="w-12 h-12 mx-auto rounded-full bg-[#00f0ff]/10 border border-[#00f0ff]/30 flex items-center justify-center text-[#00f0ff]">
+              <UploadCloud className="w-6 h-6" />
+            </div>
+
             <div>
-              <div className="text-sm font-bold text-[#00f0ff] flex items-center gap-1.5">
-                <Grid className="w-4 h-4" /> Multi-Line 2D Exploration Grid & 3D Pseudo-Cube Synthesizer
-              </div>
-              <p className="text-xs text-[#8aafc0] mt-0.5">
-                Loads 5 intersecting 2D strike & dip seismic profiles, computes spatial tie points, and executes IDW spatial interpolation to build an interactive 3D seismic volume.
+              <label
+                htmlFor="segy-upload-main"
+                className="inline-flex items-center gap-2 px-6 py-2.5 bg-[#2a9bb0] hover:bg-[#1a6b7a] text-[#0a1628] font-bold text-xs rounded-lg cursor-pointer transition-all shadow-md active:scale-95"
+              >
+                <UploadCloud className="w-4 h-4" /> Browse SEG-Y Files (.sgy / .segy)
+              </label>
+              <p className="text-xs text-[#8aafc0] mt-2">
+                or drag and drop single or multiple 2D/3D SEG-Y files here
               </p>
             </div>
-            <button
-              onClick={() => handleGenerateMultiLineSurvey('5line_cross')}
-              disabled={isLoading}
-              className="px-5 py-2.5 bg-[#00f0ff] hover:bg-[#00c8d6] text-[#0a1628] font-bold text-xs rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50 cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4" /> {isLoading ? 'Synthesizing 3D Volume...' : 'Synthesize 3D from 5-Line Survey'}
-            </button>
-          </div>
-        )}
 
-        {loadCategory === '3d-demo' && (
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-[#071322] p-4 rounded-lg border border-[#00f0ff]/30">
-            <div>
-              <div className="text-sm font-bold text-[#00f0ff] flex items-center gap-1.5">
-                <Sparkles className="w-4 h-4" /> 3D Synthetic Reservoir Cube Generator
-              </div>
-              <p className="text-xs text-[#8aafc0] mt-0.5">
-                Generates 32 Inlines × 32 Crosslines × 1000 Samples with anticlinal 3D closure and multiple reservoir targets.
-              </p>
-            </div>
-            <button
-              onClick={handleGenerate3D}
-              disabled={isLoading}
-              className="px-5 py-2.5 bg-[#00f0ff] hover:bg-[#00c8d6] text-[#0a1628] font-bold text-xs rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50 cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4" /> {isLoading ? 'Generating...' : 'Generate 3D Synthetic Cube'}
-            </button>
-          </div>
-        )}
-
-        {loadCategory === '2d-demo' && (
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-[#071322] p-4 rounded-lg border border-[#2ecc71]/30">
-            <div>
-              <div className="text-sm font-bold text-[#2ecc71] flex items-center gap-1.5">
-                <TrendingUp className="w-4 h-4" /> 2D Regional Seismic Profile Generator
-              </div>
-              <p className="text-xs text-[#8aafc0] mt-0.5">
-                Generates a continuous 400 CMP profile with dipping reflectors, listric growth faulting, bright spots, and realistic noise.
-              </p>
-            </div>
-            <button
-              onClick={handleGenerate2D}
-              disabled={isLoading}
-              className="px-5 py-2.5 bg-[#2ecc71] hover:bg-[#27ae60] text-[#0a1628] font-bold text-xs rounded-lg transition-all shadow-md flex items-center gap-2 disabled:opacity-50 cursor-pointer"
-            >
-              <Sparkles className="w-4 h-4" /> {isLoading ? 'Generating...' : 'Generate 2D Seismic Line'}
-            </button>
-          </div>
-        )}
-
-        {loadCategory === 'presets' && (
-          <div className="space-y-4 bg-[#071322] p-4 rounded-lg border border-[#f0a500]/30">
-            {/* 2D Multi-Line Survey Presets */}
-            <div>
-              <div className="text-xs font-bold text-[#00f0ff] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                <span>🌐</span> Multi-Line 2D Exploration Surveys (Auto-Interpolate to 3D)
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {MULTI_LINE_PRESETS.map((preset) => (
-                  <div
-                    key={preset.id}
-                    className="bg-[#0b1b30] border border-[#2a9bb0]/30 rounded-lg p-3 flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="font-bold text-xs text-[#00f0ff] mb-1">{preset.name}</div>
-                      <p className="text-[11px] text-[#8aafc0] mb-3 leading-relaxed">{preset.description}</p>
-                    </div>
-                    <button
-                      onClick={() => handleGenerateMultiLineSurvey(preset.id)}
-                      disabled={isLoading}
-                      className="w-full py-1.5 bg-[#162d4c] hover:bg-[#00f0ff] hover:text-[#0a1628] text-[#00f0ff] font-semibold text-xs rounded transition-colors cursor-pointer"
-                    >
-                      Construct 3D from {preset.linesCount} Lines
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* 2D Presets */}
-            <div className="pt-2 border-t border-[#2a9bb0]/20">
-              <div className="text-xs font-bold text-[#2ecc71] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                <span>📈</span> 2D Regional Exploration Profiles
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {GEOLOGICAL_PRESETS_2D.map((preset) => (
-                  <div
-                    key={preset.id}
-                    className="bg-[#0b1b30] border border-[#2a9bb0]/30 rounded-lg p-3 flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="font-bold text-xs text-[#2ecc71] mb-1">{preset.name}</div>
-                      <p className="text-[11px] text-[#8aafc0] mb-3 leading-relaxed">{preset.description}</p>
-                    </div>
-                    <button
-                      onClick={() => handleSelectPreset2D(preset)}
-                      disabled={isLoading}
-                      className="w-full py-1.5 bg-[#162d4c] hover:bg-[#2ecc71] hover:text-[#0a1628] text-[#2ecc71] font-semibold text-xs rounded transition-colors cursor-pointer"
-                    >
-                      Load 2D Profile
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* 3D Presets */}
-            <div className="pt-2 border-t border-[#2a9bb0]/20">
-              <div className="text-xs font-bold text-[#00f0ff] uppercase tracking-wider mb-2 flex items-center gap-1.5">
-                <span>🧊</span> 3D Field Volumes
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {GEOLOGICAL_PRESETS_3D.map((preset) => (
-                  <div
-                    key={preset.id}
-                    className="bg-[#0b1b30] border border-[#2a9bb0]/30 rounded-lg p-3 flex flex-col justify-between"
-                  >
-                    <div>
-                      <div className="font-bold text-xs text-[#00f0ff] mb-1">{preset.name}</div>
-                      <p className="text-[11px] text-[#8aafc0] mb-3 leading-relaxed">{preset.description}</p>
-                    </div>
-                    <button
-                      onClick={() => handleSelectPreset3D(preset)}
-                      disabled={isLoading}
-                      className="w-full py-1.5 bg-[#162d4c] hover:bg-[#00f0ff] hover:text-[#0a1628] text-[#00f0ff] font-semibold text-xs rounded transition-colors cursor-pointer"
-                    >
-                      Load 3D Cube
-                    </button>
-                  </div>
-                ))}
-              </div>
+            <div className="flex flex-wrap items-center justify-center gap-4 text-[11px] text-[#8aafc0] pt-1">
+              <span className="flex items-center gap-1">
+                <FileCheck className="w-3.5 h-3.5 text-[#2ecc71]" /> IEEE & IBM Float Support
+              </span>
+              <span className="flex items-center gap-1">
+                <Layers className="w-3.5 h-3.5 text-[#00f0ff]" /> Multi-Line 2D Survey Parser
+              </span>
+              <span className="flex items-center gap-1">
+                <Box className="w-3.5 h-3.5 text-[#f0a500]" /> 3D Volume Slices
+              </span>
             </div>
           </div>
-        )}
-
-        {loadCategory === 'upload' && (
-          <div className="bg-[#071322] p-6 rounded-lg border border-dashed border-[#2a9bb0]/40 text-center space-y-3">
-            <input
-              type="file"
-              multiple
-              accept=".sgy,.segy"
-              id="segy-upload"
-              onChange={handleFileUpload}
-              className="hidden"
-            />
-            <label
-              htmlFor="segy-upload"
-              className="inline-flex items-center gap-2 px-6 py-3 bg-[#2a9bb0] hover:bg-[#1a6b7a] text-[#0a1628] font-bold text-xs rounded-lg cursor-pointer transition-all shadow-md"
-            >
-              <UploadCloud className="w-5 h-5" /> Select Single or Multiple SEG-Y Binary Files (.sgy / .segy)
-            </label>
-            <p className="text-xs text-[#8aafc0] max-w-md mx-auto">
-              Select multiple 2D line files to automatically align spatial coordinates, detect cross-tie intersections, and synthesize an interpolated 3D seismic volume.
-            </p>
-          </div>
-        )}
+        </div>
 
         {errorMessage && (
           <div className="mt-3 p-3 bg-red-950/60 border border-red-500/50 rounded-lg text-xs text-red-300">
@@ -644,16 +350,6 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
               <span className="text-xs font-bold text-[#8aafc0] uppercase">Viewport Display:</span>
               <div className="flex bg-[#071322] p-1 rounded-lg border border-[#2a9bb0]/30 text-xs">
                 <button
-                  onClick={() => setMainViewMode('3d-window')}
-                  className={`px-3.5 py-1.5 rounded font-semibold flex items-center gap-1.5 transition-all ${
-                    mainViewMode === '3d-window'
-                      ? 'bg-[#00f0ff] text-[#0a1628] shadow'
-                      : 'text-[#8aafc0] hover:text-white'
-                  }`}
-                >
-                  <Box className="w-3.5 h-3.5" /> Interactive 3D Window
-                </button>
-                <button
                   onClick={() => setMainViewMode('section')}
                   className={`px-3.5 py-1.5 rounded font-semibold flex items-center gap-1.5 transition-all ${
                     mainViewMode === 'section'
@@ -662,6 +358,16 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
                   }`}
                 >
                   <Activity className="w-3.5 h-3.5" /> 2D Section Slice
+                </button>
+                <button
+                  onClick={() => setMainViewMode('3d-window')}
+                  className={`px-3.5 py-1.5 rounded font-semibold flex items-center gap-1.5 transition-all ${
+                    mainViewMode === '3d-window'
+                      ? 'bg-[#00f0ff] text-[#0a1628] shadow'
+                      : 'text-[#8aafc0] hover:text-white'
+                  }`}
+                >
+                  <Box className="w-3.5 h-3.5" /> Interactive 3D Window
                 </button>
                 {cube.multiLineSurvey && (
                   <button
@@ -678,7 +384,7 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
               </div>
             </div>
 
-            {/* Quick Slicing Plane controls (for 2D slice mode) */}
+            {/* Quick Slicing Plane controls (for 3D mode) */}
             {mainViewMode === 'section' && cube.type === '3d' && (
               <div className="flex items-center gap-3">
                 <span className="text-xs text-[#8aafc0]">Slice Plane:</span>
@@ -723,6 +429,7 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
             <MultiLineSurveyBasemap
               survey={cube.multiLineSurvey}
               selectedLineId={selectedSurveyLineId}
+              wells={wells}
               onSelectLine={(id) => {
                 setSelectedSurveyLineId(id);
                 handleSelectLine(id);
@@ -748,73 +455,81 @@ export const Panel1Seismic: React.FC<Panel1SeismicProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Amplitude & Frequency Spectrum */}
             <div className="bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl p-5 shadow-lg space-y-3">
-              <h3 className="text-sm font-semibold text-[#2a9bb0] uppercase tracking-wider flex items-center gap-2">
-                <Activity className="w-4 h-4" /> Average Amplitude & Frequency Spectrum
-              </h3>
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-[#2a9bb0] uppercase tracking-wider flex items-center gap-2">
+                  <Activity className="w-4 h-4" /> Average Amplitude & Frequency Spectrum
+                </h4>
+                <span className="text-[10px] text-[#8aafc0]">Mean Trace Power & Envelope</span>
+              </div>
               <SpectrumChart
                 meanTrace={cube.meanTrace || []}
+                envelope={cube.envelope}
                 sampleRate={cube.sampleRate}
+                suggestions={suggestions}
               />
             </div>
 
-            {/* Candidate Reservoir Horizon Picks */}
-            <div className="bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl p-5 shadow-lg space-y-3 flex flex-col justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-[#00f0ff] uppercase tracking-wider flex items-center gap-2 mb-2">
-                  <Sparkles className="w-4 h-4" /> Auto-Detected Reservoir Horizon Candidates
-                </h3>
-                <p className="text-xs text-[#8aafc0] mb-3">
-                  Key reflective boundaries identified from zone-normalized amplitude envelope:
-                </p>
+            {/* Auto-Detected Reflectors & Horizon Suggestions */}
+            <div className="bg-[#0f2139] border border-[#2a9bb0]/30 rounded-xl p-5 shadow-lg space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-[#2a9bb0] uppercase tracking-wider flex items-center gap-2">
+                  <Layers className="w-4 h-4" /> Auto-Detected Reflector Candidates ({suggestions.length})
+                </h4>
+                <span className="text-[10px] text-[#8aafc0]">Peak Energy Boundaries</span>
+              </div>
 
+              {suggestions.length > 0 ? (
                 <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
-                  {suggestions.map((s, idx) => (
+                  {suggestions.slice(0, 5).map((sug, idx) => (
                     <div
                       key={idx}
-                      className="flex items-center justify-between p-2.5 bg-[#071322] rounded-lg border border-[#2a9bb0]/20 hover:border-[#2a9bb0]/50 transition-colors"
+                      className="bg-[#071322] border border-[#2a9bb0]/20 rounded-lg p-2.5 flex items-center justify-between text-xs hover:border-[#2a9bb0]/50 transition-colors"
                     >
                       <div className="flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-full bg-[#2a9bb0]/20 text-[#2a9bb0] text-[10px] font-mono font-bold flex items-center justify-center">
-                          {idx + 1}
-                        </span>
+                        <span
+                          className={`w-2 h-2 rounded-full ${
+                            sug.amplitude >= 0 ? 'bg-[#2ecc71]' : 'bg-[#e74c3c]'
+                          }`}
+                        />
                         <div>
-                          <div className="text-xs font-bold text-[#e8f4f8]">
-                            Reflector at {s.timeMs} ms (Sample #{s.sample})
+                          <div className="font-bold text-[#e8f4f8]">
+                            Reflector Candidate #{idx + 1}
                           </div>
                           <div className="text-[10px] text-[#8aafc0]">
-                            Amp: {s.amplitude > 0 ? `+${s.amplitude}` : s.amplitude} | Confidence: {s.confidence}%
+                            TWT: <span className="font-mono text-[#00f0ff]">{Math.round(sug.timeMs)} ms</span> (Sample #{sug.sample})
                           </div>
                         </div>
                       </div>
-
-                      <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-[#162d4c] text-[#00f0ff]">
-                        {s.timeMs} ms
-                      </span>
+                      <div className="text-right">
+                        <div className="text-[10px] font-mono text-[#2ecc71]">
+                          Amp: {sug.amplitude > 0 ? `+${sug.amplitude.toFixed(2)}` : sug.amplitude.toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-[#8aafc0]">
+                          Conf: {Math.round(sug.confidence)}%
+                        </div>
+                      </div>
                     </div>
                   ))}
                 </div>
-              </div>
-
-              <button
-                onClick={onNavigateNext}
-                className="w-full mt-3 py-2.5 bg-[#2a9bb0] hover:bg-[#1a6b7a] text-[#0a1628] font-bold text-xs rounded-lg transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer"
-              >
-                Proceed to Panel 2: Horizon Auto-Tracking <ChevronRight className="w-4 h-4" />
-              </button>
+              ) : (
+                <div className="p-6 text-center text-xs text-[#8aafc0]">
+                  No reflector suggestions detected. Load or import a seismic dataset.
+                </div>
+              )}
             </div>
           </div>
         </>
       )}
 
-      {/* SEG-Y Import Wizard Modal */}
+      {/* SEG-Y Import Modal */}
       {showImportModal && uploadFiles.length > 0 && (
         <SegyImportModal
           files={uploadFiles}
-          onConfirm={handleConfirmImport}
           onCancel={() => {
             setShowImportModal(false);
             setUploadFiles([]);
           }}
+          onConfirm={handleConfirmImport}
         />
       )}
     </div>

@@ -196,8 +196,97 @@ export interface PetroParam {
   mean?: number;
 }
 
+export interface DeviationSurveyStation {
+  md: number; // Measured Depth (m)
+  inclination: number; // Inclination angle in degrees (0 = vertical, 90 = horizontal)
+  azimuth: number; // Azimuth in degrees (0-360)
+  tvd?: number; // True Vertical Depth (m) below KB
+  tvdss?: number; // True Vertical Depth Subsea (TVD - KB)
+  hd?: number; // Horizontal Displacement (m)
+  dx?: number; // Delta Easting / X offset (m)
+  dy?: number; // Delta Northing / Y offset (m)
+  x?: number; // Absolute Easting
+  y?: number; // Absolute Northing
+  dogleg?: number; // Dogleg severity (deg/30m)
+}
+
+export interface WellTrajectory {
+  rawSurveyText?: string;
+  surveyType?: 'md_inc_az' | 'md_az_inc' | 'md_inc_hd_tvd_az' | 'directional';
+  stations: DeviationSurveyStation[];
+  maxInclination: number;
+  bottomHoleLocation: {
+    md: number;
+    tvd: number;
+    hd: number;
+    x: number;
+    y: number;
+    azimuth: number;
+    inclination: number;
+  };
+}
+
+export interface WellLocation {
+  x?: number; // Easting / Longitude / X Coordinate
+  y?: number; // Northing / Latitude / Y Coordinate
+  inline?: number; // 3D Seismic Inline index
+  crossline?: number; // 3D Seismic Crossline index
+  lineName?: string; // 2D Line ID/Name if in a 2D survey
+  cdpOrSp?: number; // Shotpoint / CDP / Trace number along 2D line
+  elevationKb?: number; // Kelly Bushing Elevation in meters
+  groundElevation?: number; // Ground Level / Water Depth in meters
+  totalDepth?: number; // Total Measured Depth in meters
+}
+
+export interface ExtractedWellPetro {
+  meanPhi: number;
+  meanSw: number;
+  ntg: number;
+  netPayM: number;
+  grossIntervalM: number;
+  phiP10: number;
+  phiP50: number;
+  phiP90: number;
+  swP10: number;
+  swP50: number;
+  swP90: number;
+  ntgP10: number;
+  ntgP50: number;
+  ntgP90: number;
+  meanGr?: number;
+  meanRt?: number;
+}
+
+export interface WellData {
+  id: string;
+  wellName: string;
+  uwi?: string;
+  field?: string;
+  operator?: string;
+  location: WellLocation;
+  trajectory?: WellTrajectory; // Directional wellbore trajectory & deviation survey
+  topDepth: number; // Top Reservoir depth in meters
+  baseDepth: number; // Base Reservoir depth in meters
+  topTwtMs?: number; // Computed/estimated seismic Two-Way Travel Time in ms
+  baseTwtMs?: number;
+  lasSummary: LASSummary;
+  extractedPetro: ExtractedWellPetro;
+  isActive: boolean; // Toggle for inclusion in field-wide property synthesis
+  color?: string; // Color tag for charts and basemap
+}
+
+export interface MultiWellSynthesis {
+  method: 'arithmetic' | 'thickness-weighted' | 'idw-spatial';
+  activeWellCount: number;
+  phi: PetroParam;
+  sw: PetroParam;
+  ntg: PetroParam;
+  averageNetPayM: number;
+  averageGrossIntervalM: number;
+}
+
 export interface PetroState {
-  source: 'manual' | 'las' | 'demo' | 'default';
+  source: 'manual' | 'las' | 'multi-well' | 'demo' | 'default';
   porosity: PetroParam;
   phi: PetroParam;
   sw: PetroParam;
@@ -207,6 +296,10 @@ export interface PetroState {
   lasSummary?: LASSummary | null;
   topDepth?: number;
   baseDepth?: number;
+  wells?: WellData[]; // Multi-well array with location and petro properties
+  activeWellId?: string; // Selected well for focused log curve viewing
+  correlationMethod?: 'arithmetic' | 'thickness-weighted' | 'idw-spatial';
+  datumMode?: 'structural-depth' | 'stratigraphic-top' | 'twt-time';
 }
 
 export interface LASSummary {

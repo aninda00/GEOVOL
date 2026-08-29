@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState } from 'react';
-import { MultiLine2DSurvey, Seismic2DLineInfo, LineIntersection } from '../types';
+import { MultiLine2DSurvey, Seismic2DLineInfo, LineIntersection, WellData } from '../types';
 import { MapPin, Eye, EyeOff, Layers, ZoomIn, ZoomOut, RotateCw } from 'lucide-react';
 
 interface MultiLineSurveyBasemapProps {
@@ -7,6 +7,8 @@ interface MultiLineSurveyBasemapProps {
   selectedLineId?: string | null;
   onSelectLine?: (lineId: string) => void;
   onToggleLineVisibility?: (lineId: string) => void;
+  wells?: WellData[];
+  onSelectWell?: (wellId: string) => void;
 }
 
 export const MultiLineSurveyBasemap: React.FC<MultiLineSurveyBasemapProps> = ({
@@ -14,10 +16,13 @@ export const MultiLineSurveyBasemap: React.FC<MultiLineSurveyBasemapProps> = ({
   selectedLineId,
   onSelectLine,
   onToggleLineVisibility,
+  wells = [],
+  onSelectWell,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [hoveredLine, setHoveredLine] = useState<string | null>(null);
   const [hoveredIntersection, setHoveredIntersection] = useState<LineIntersection | null>(null);
+  const [hoveredWell, setHoveredWell] = useState<WellData | null>(null);
 
   const { bounds, lines, intersections } = survey;
   const spanX = Math.max(10, bounds.maxX - bounds.minX);
@@ -181,7 +186,59 @@ export const MultiLineSurveyBasemap: React.FC<MultiLineSurveyBasemapProps> = ({
       ctx.arc(ix, iy, 8, 0, Math.PI * 2);
       ctx.stroke();
     });
-  }, [survey, selectedLineId, hoveredLine, bounds, spanX, spanY, lines, intersections]);
+
+    // Draw Well Locations (Well Heads with geological circle & crosshair)
+    wells.forEach((well) => {
+      let wx: number | undefined = well.location.x;
+      let wy: number | undefined = well.location.y;
+
+      // If X/Y not directly in bounds, derive from 3D inline/crossline or line tie
+      if (wx == null || wy == null || wx < bounds.minX - 5000 || wx > bounds.maxX + 5000) {
+        if (well.location.inline != null && well.location.crossline != null) {
+          wx = bounds.minX + (well.location.crossline / 32) * spanX;
+          wy = bounds.minY + (well.location.inline / 32) * spanY;
+        }
+      }
+
+      if (wx == null || wy == null) return;
+
+      const px = mapX(wx);
+      const py = mapY(wy);
+      const isHovered = hoveredWell?.id === well.id;
+      const wellColor = well.color || '#00f0ff';
+
+      // Outer halo
+      ctx.fillStyle = isHovered ? 'rgba(0, 240, 255, 0.35)' : 'rgba(46, 204, 113, 0.2)';
+      ctx.beginPath();
+      ctx.arc(px, py, isHovered ? 12 : 9, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Wellhead circle
+      ctx.fillStyle = '#050d1a';
+      ctx.strokeStyle = wellColor;
+      ctx.lineWidth = isHovered ? 2.5 : 2;
+      ctx.beginPath();
+      ctx.arc(px, py, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Center dot
+      ctx.fillStyle = wellColor;
+      ctx.beginPath();
+      ctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Well name label
+      ctx.font = 'bold 9px JetBrains Mono, monospace';
+      ctx.fillStyle = isHovered ? '#00f0ff' : '#e8f4f8';
+      ctx.fillText(well.wellName, px + 10, py - 4);
+
+      // Micro pay tag
+      ctx.font = '8px JetBrains Mono, monospace';
+      ctx.fillStyle = '#2ecc71';
+      ctx.fillText(`${well.extractedPetro.netPayM}m pay`, px + 10, py + 6);
+    });
+  }, [survey, selectedLineId, hoveredLine, bounds, spanX, spanY, lines, intersections, wells, hoveredWell]);
 
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -195,6 +252,28 @@ export const MultiLineSurveyBasemap: React.FC<MultiLineSurveyBasemapProps> = ({
     const drawH = canvas.height - pad * 2;
     const mapX = (x: number) => pad + ((x - bounds.minX) / spanX) * drawW;
     const mapY = (y: number) => canvas.height - pad - ((y - bounds.minY) / spanY) * drawH;
+
+    // Check well hover
+    let foundWell: WellData | null = null;
+    for (const w of wells) {
+      let wx = w.location.x;
+      let wy = w.location.y;
+      if (wx == null || wy == null) {
+        if (w.location.inline != null && w.location.crossline != null) {
+          wx = bounds.minX + (w.location.crossline / 32) * spanX;
+          wy = bounds.minY + (w.location.inline / 32) * spanY;
+        }
+      }
+      if (wx != null && wy != null) {
+        const px = mapX(wx);
+        const py = mapY(wy);
+        if (Math.hypot(mx - px, my - py) < 14) {
+          foundWell = w;
+          break;
+        }
+      }
+    }
+    setHoveredWell(foundWell);
 
     // Check intersection hover
     let foundInter: LineIntersection | null = null;
@@ -236,7 +315,9 @@ export const MultiLineSurveyBasemap: React.FC<MultiLineSurveyBasemapProps> = ({
   };
 
   const handleCanvasClick = () => {
-    if (hoveredLine) {
+    if (hoveredWell) {
+      onSelectWell?.(hoveredWell.id);
+    } else if (hoveredLine) {
       onSelectLine?.(hoveredLine);
     }
   };
@@ -247,11 +328,11 @@ export const MultiLineSurveyBasemap: React.FC<MultiLineSurveyBasemapProps> = ({
         <div className="flex items-center gap-2">
           <MapPin className="w-4 h-4 text-[#00f0ff]" />
           <h3 className="text-xs font-bold uppercase tracking-wider text-[#e8f4f8]">
-            2D Multi-Line Survey Basemap & Navigation Grid
+            2D Multi-Line Survey Basemap & Well Navigation Grid
           </h3>
         </div>
         <span className="text-[11px] font-mono text-[#8aafc0]">
-          {lines.length} 2D Profiles | {intersections.length} Tie Intersections
+          {lines.length} 2D Profiles | {wells.length} Wells Correlated
         </span>
       </div>
 

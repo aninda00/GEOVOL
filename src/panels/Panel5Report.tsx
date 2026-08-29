@@ -356,6 +356,59 @@ export const Panel5Report: React.FC<Panel5ReportProps> = ({
             </table>
           </div>
         </div>
+
+        {/* Multi-Well Log Correlation Summary */}
+        {petroState.wells && petroState.wells.length > 0 && (
+          <div>
+            <h4 className="text-xs font-semibold text-[#8aafc0] uppercase tracking-wider mb-2 flex items-center gap-2">
+              <MapPin className="w-3.5 h-3.5 text-[#00f0ff]" /> Correlated Multi-Well Log Inventory ({petroState.wells.length} Wells)
+            </h4>
+            <div className="overflow-x-auto rounded-lg border border-[#2a9bb0]/20">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="bg-[#071322] text-[#8aafc0]">
+                  <tr>
+                    <th className="p-2.5">Well Name</th>
+                    <th className="p-2.5">Coordinates (X, Y)</th>
+                    <th className="p-2.5">Seismic Grid</th>
+                    <th className="p-2.5">Interval (m)</th>
+                    <th className="p-2.5">Net Pay (m)</th>
+                    <th className="p-2.5">Porosity (Φ)</th>
+                    <th className="p-2.5">Water Sat (Sw)</th>
+                    <th className="p-2.5">NTG</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#2a9bb0]/15 bg-[#0b1b30]">
+                  {petroState.wells.map((well) => (
+                    <tr key={well.id} className={well.isActive ? '' : 'opacity-40'}>
+                      <td className="p-2.5 font-bold text-[#e8f4f8] flex items-center gap-2">
+                        <span
+                          className="w-2.5 h-2.5 rounded-full"
+                          style={{ backgroundColor: well.color || '#00f0ff' }}
+                        />
+                        {well.wellName}
+                      </td>
+                      <td className="p-2.5 text-[#8aafc0]">
+                        {well.location.x != null && well.location.y != null
+                          ? `${Math.round(well.location.x)}, ${Math.round(well.location.y)}`
+                          : '—'}
+                      </td>
+                      <td className="p-2.5 text-[#00f0ff]">
+                        {well.location.inline != null
+                          ? `IL:${well.location.inline} XL:${well.location.crossline}`
+                          : well.location.lineName || '—'}
+                      </td>
+                      <td className="p-2.5">{well.topDepth} – {well.baseDepth}m</td>
+                      <td className="p-2.5 text-[#2ecc71] font-bold">{well.extractedPetro.netPayM}m</td>
+                      <td className="p-2.5 text-[#00f0ff]">{(well.extractedPetro.meanPhi * 100).toFixed(1)}%</td>
+                      <td className="p-2.5 text-[#f0a500]">{(well.extractedPetro.meanSw * 100).toFixed(0)}%</td>
+                      <td className="p-2.5 font-bold">{(well.extractedPetro.ntg * 100).toFixed(0)}%</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

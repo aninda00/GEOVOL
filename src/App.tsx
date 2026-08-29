@@ -27,11 +27,11 @@ export const App: React.FC = () => {
 
   // Project Metadata
   const [metadata, setMetadata] = useState<ProjectMetadata>({
-    projectName: 'GEOVOL Reservoir Study',
-    fieldName: 'Brent Discovery Prospect',
+    projectName: 'GEOVOL Saldanadi Assessment',
+    fieldName: 'Saldanadi Gas Field',
     author: 'Geoscientist',
-    formation: 'Brent Sandstone Member',
-    notes: 'Probabilistic exploration volumetrics assessment using 3D seismic horizon tracking and Monte Carlo uncertainty modeling.',
+    formation: 'Bokabil / Upper Bhuban Gas Sand',
+    notes: 'Probabilistic exploration & development volumetrics assessment combining 2D/3D seismic, Saldanadi wellhead coordinates, directional deviation surveys, and Monte Carlo uncertainty modeling.',
     date: new Date().toISOString().split('T')[0],
   });
 
@@ -40,11 +40,11 @@ export const App: React.FC = () => {
   const [horizonState, setHorizonState] = useState<HorizonState | null>(null);
   const [petroState, setPetroState] = useState<PetroState>({
     source: 'default',
-    porosity: { p10: 0.18, p50: 0.22, p90: 0.26, distribution: 'triangular' },
-    phi: { p10: 0.18, p50: 0.22, p90: 0.26, distribution: 'triangular' },
-    sw: { p10: 0.22, p50: 0.30, p90: 0.38, distribution: 'triangular' },
-    ntg: { p10: 0.65, p50: 0.78, p90: 0.88, distribution: 'triangular' },
-    bo: { p10: 1.18, p50: 1.25, p90: 1.34, distribution: 'triangular' },
+    porosity: { p10: 0.16, p50: 0.20, p90: 0.24, distribution: 'triangular' },
+    phi: { p10: 0.16, p50: 0.20, p90: 0.24, distribution: 'triangular' },
+    sw: { p10: 0.25, p50: 0.33, p90: 0.42, distribution: 'triangular' },
+    ntg: { p10: 0.70, p50: 0.82, p90: 0.90, distribution: 'triangular' },
+    bo: { p10: 1.15, p50: 1.22, p90: 1.30, distribution: 'triangular' },
     bg: { p10: 0.0040, p50: 0.0045, p90: 0.0052, distribution: 'triangular' },
   });
   const [mcResults, setMcResults] = useState<MonteCarloResults | null>(null);
@@ -52,7 +52,7 @@ export const App: React.FC = () => {
   // Auto-initialize standard synthetic dataset on first load
   useEffect(() => {
     try {
-      const initialCube = generateSyntheticCube(32, 32, 1000, 4.0, 'Brent Discovery 3D Cube');
+      const initialCube = generateSyntheticCube(32, 32, 1000, 4.0, 'Saldanadi Exploration 3D Cube');
       setCube(initialCube);
 
       // Initial horizon picks
@@ -132,6 +132,7 @@ export const App: React.FC = () => {
           {activePanel === 1 && (
             <Panel1Seismic
               cube={cube}
+              wells={petroState.wells}
               onCubeLoaded={(loadedCube) => {
                 setCube(loadedCube);
                 setHorizonState(null);
